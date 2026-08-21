@@ -91,8 +91,14 @@ values and shows only whether a key is configured. See `docs/model-routing-v1.2.
 
 ## Cross-platform CI and final verdict
 
-Current v1.2.1 source has not yet been committed or pushed for a Windows/Linux hosted CI run.
-Therefore this evidence is a local release candidate, not a final acceptance release.
+Implementation commit `9e1d4a6bb497bbf51fa9fb25a8fd371b5d67b210` was pushed to
+`codex/v1.2.1-model-routing` and passed hosted CI run
+[`32505355983`](https://github.com/maoeast/Smart-Photo-Triage/actions/runs/32505355983).
+All four matrix jobs passed: Windows and Ubuntu on Python 3.11 and 3.13. Each job completed
+format, lint, full regression, coverage, distribution build, and installed-wheel synthetic E2E.
+GitHub emitted only the existing Node.js 20 action deprecation annotation; no job failed.
 
-**NOT_READY** pending authorized commit/push and green hosted Windows + Linux CI for this exact
-v1.2.1 commit. External-provider smoke remains optional and correctly recorded as not run.
+External-provider smoke remains optional and correctly recorded as not run because no real API
+credentials were supplied. The release candidate satisfies the non-external Definition of Done.
+
+**READY_FOR_FINAL_ACCEPTANCE_1_2_1**
