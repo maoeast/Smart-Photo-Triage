@@ -45,6 +45,21 @@ must match the identity stored inside SQLite on every initialization. Because Ph
 released, an existing markerless database is conservatively rejected instead of being attributed to
 SPT without proof.
 
+## Local one-click GUI
+
+Start the local control panel after installation. It binds only to `127.0.0.1` and opens a browser;
+it never exposes a LAN service:
+
+```powershell
+spt gui --workspace "D:\SPT-Workspace"
+```
+
+Enter a source directory and a separate output directory, then follow the numbered controls:
+scan, prepare local previews/groups/offline Fake AI, open the human-review page, build a COPY plan,
+approve, preflight, and dry-run. The GUI starts with COPY only. A real apply requires typing
+`EXECUTE`; rollback requires the transaction ID and typing `ROLLBACK`. These confirmations do not
+bypass the immutable plan, approval, preflight, journal, hash verification, or rollback checks.
+
 ## Read-only scan
 
 ```powershell

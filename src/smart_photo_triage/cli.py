@@ -32,6 +32,7 @@ from smart_photo_triage.executor import (
     rollback_transaction,
 )
 from smart_photo_triage.grouping import group_workspace
+from smart_photo_triage.gui import serve_gui
 from smart_photo_triage.planner import (
     PlannerError,
     PlannerOptions,
@@ -305,6 +306,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not open the system browser automatically",
     )
+    gui_parser = commands.add_parser("gui", help="Open the local one-click workflow control panel")
+    gui_parser.add_argument(
+        "--workspace", type=Path, default=Path(".spt"), help="Workspace path (default: .spt)"
+    )
+    gui_parser.add_argument(
+        "--port", type=_port_number, default=0, help="Local port; 0 selects an available port"
+    )
+    gui_parser.add_argument("--no-open", action="store_true", help="Do not open a browser")
     plan_parser = commands.add_parser(
         "plan", help="Build, inspect, approve, and preflight immutable organization plans"
     )
@@ -523,6 +532,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (sqlite3.Error, OSError, ReviewError, ValueError, WorkspaceOwnershipError) as error:
             print(f"Review failed: {error}", file=sys.stderr)
+            return 2
+        return 0
+    if args.command == "gui":
+        try:
+            serve_gui(args.workspace, port=args.port, open_browser=not args.no_open)
+        except (sqlite3.Error, OSError, ValueError, WorkspaceOwnershipError) as error:
+            print(f"GUI failed: {error}", file=sys.stderr)
             return 2
         return 0
     if args.command in {"apply", "doctor", "resume", "rollback"}:
