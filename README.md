@@ -55,10 +55,14 @@ spt gui --workspace "D:\SPT-Workspace"
 ```
 
 Enter a source directory and a separate output directory, then follow the numbered controls:
-scan, prepare local previews/groups/offline Fake AI, open the human-review page, build a COPY plan,
-approve, preflight, and dry-run. The GUI starts with COPY only. A real apply requires typing
+scan, choose the offline Fake provider or explicitly configured Gemini, prepare local previews/groups,
+open the human-review page, build a COPY plan, approve, preflight, and dry-run. The GUI starts with
+COPY only. A real apply requires typing
 `EXECUTE`; rollback requires the transaction ID and typing `ROLLBACK`. These confirmations do not
 bypass the immutable plan, approval, preflight, journal, hash verification, or rollback checks.
+
+For the complete Chinese installation, start/stop, uninstall, button-by-button, review, recovery,
+and rollback guide, see [the local GUI user manual](docs/USER_MANUAL_zh-CN.md).
 
 ## Read-only scan
 

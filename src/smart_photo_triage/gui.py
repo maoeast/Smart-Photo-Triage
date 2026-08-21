@@ -13,7 +13,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from smart_photo_triage.ai import AnalysisOptions, FakeVisionProvider, analyze_workspace
+from smart_photo_triage.ai import (
+    AnalysisOptions,
+    FakeVisionProvider,
+    GeminiVisionProvider,
+    analyze_workspace,
+)
+from smart_photo_triage.config import AppConfig, load_config, save_config
 from smart_photo_triage.executor import apply_plan, doctor_workspace, rollback_transaction
 from smart_photo_triage.grouping import group_workspace
 from smart_photo_triage.planner import PlannerOptions, approve_plan, build_plan, preflight_plan
@@ -23,6 +29,7 @@ from smart_photo_triage.scanner import scan_library, validate_scan_layout
 from smart_photo_triage.workspace import Workspace, initialize_workspace
 
 _MAX_REQUEST_BYTES = 16_384
+_CLOUD_CONFIRMATION = "ALLOW_CLOUD"
 _EXECUTE_CONFIRMATION = "EXECUTE"
 _ROLLBACK_CONFIRMATION = "ROLLBACK"
 
@@ -107,6 +114,8 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 {
                     "csrf_token": self.server.csrf_token,
                     "workspace": str(self.server.workspace.root),
+                    "allow_cloud": load_config(self.server.workspace.config_path).allow_cloud,
+                    "cloud_confirmation": _CLOUD_CONFIRMATION,
                     "execute_confirmation": _EXECUTE_CONFIRMATION,
                     "rollback_confirmation": _ROLLBACK_CONFIRMATION,
                 },
@@ -160,14 +169,31 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if action == "prepare":
             pre = preprocess_workspace(workspace, config=PreviewConfig())
             grouped = group_workspace(workspace)
-            analysis = analyze_workspace(
-                workspace, provider=FakeVisionProvider(), options=AnalysisOptions()
-            )
+            provider_name = _choice(payload, "provider", {"fake", "gemini"}, default="fake")
+            if provider_name == "gemini":
+                if not load_config(workspace.config_path).allow_cloud:
+                    raise ValueError("enable cloud analysis before using Gemini")
+                provider = GeminiVisionProvider(
+                    model=_required_text(payload, "model", maximum=256),
+                    api_key=_secret(payload, "api_key"),
+                )
+            else:
+                provider = FakeVisionProvider()
+            analysis = analyze_workspace(workspace, provider=provider, options=AnalysisOptions())
             return {
                 "preprocess": _result(pre),
                 "group": _result(grouped),
                 "analysis": _result(analysis),
             }
+        if action == "configure-cloud":
+            enabled = _bool(payload, "allow_cloud")
+            if (
+                enabled
+                and _required_text(payload, "confirmation", maximum=64) != _CLOUD_CONFIRMATION
+            ):
+                raise ValueError("type ALLOW_CLOUD to enable cloud analysis")
+            save_config(workspace.config_path, AppConfig(allow_cloud=enabled))
+            return {"allow_cloud": enabled, "api_key_stored": False}
         if action == "review":
             review = create_review_server(workspace, port=0)
             thread = threading.Thread(target=review.serve_forever, daemon=True)
@@ -215,10 +241,35 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
 
 
 def _text(payload: dict[str, object], key: str) -> str:
+    return _required_text(payload, key, maximum=4096)
+
+
+def _required_text(payload: dict[str, object], key: str, *, maximum: int) -> str:
     value = payload.get(key)
-    if not isinstance(value, str) or not value.strip() or len(value) > 4096:
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise ValueError(f"{key} is required")
     return value.strip()
+
+
+def _secret(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip() or len(value) > 2048:
+        raise ValueError("a valid API key is required")
+    return value.strip()
+
+
+def _choice(payload: dict[str, object], key: str, choices: set[str], *, default: str) -> str:
+    value = payload.get(key, default)
+    if not isinstance(value, str) or value not in choices:
+        raise ValueError(f"{key} is invalid")
+    return value
+
+
+def _bool(payload: dict[str, object], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+    return value
 
 
 def create_gui_server(
@@ -250,9 +301,15 @@ _HTML = """<!doctype html>
 <link rel="stylesheet" href="/app.css"></head><body><main><h1>Smart Photo Triage</h1>
 <p>本地工作流。扫描和准备阶段只读，真实复制必须输入确认词。</p>
 <label>工作区 <input id="workspace" readonly></label><label>照片源 <input id="source"></label>
-<label>输出目录 <input id="output"></label><section><button data-action="scan">1. 扫描</button>
-<button data-action="prepare">2. 准备</button><button data-action="review">3. 审核</button>
-<button data-action="plan">4. 计划</button></section><label>计划 ID <input id="plan_id"></label>
+<label>输出目录 <input id="output"></label><fieldset><legend>分析模型</legend>
+<label>提供方 <select id="provider"><option value="fake">离线演示模型（不上传）</option><option value="gemini">Google Gemini（上传受控预览）</option></select></label>
+<label>Gemini 模型 <input id="model" placeholder="例如：你在 Gemini 控制台启用的模型 ID"></label>
+<label>Gemini API Key <input id="api_key" type="password" autocomplete="off" placeholder="仅用于本次准备，不保存"></label>
+<label class="check"><input id="allow_cloud" type="checkbox"> 我理解 Gemini 会接收受控预览图和必要元数据</label>
+<label>启用云端确认词 <input id="cloud_confirmation" placeholder="启用时输入 ALLOW_CLOUD"></label>
+<button data-action="configure-cloud">保存云端授权</button><p class="hint">API Key 不会写入工作区或配置文件。关闭勾选并保存可禁用云端。</p></fieldset>
+<section><button data-action="scan">1. 扫描</button><button data-action="prepare">2. 准备</button>
+<button data-action="review">3. 审核</button><button data-action="plan">4. 计划</button></section><label>计划 ID <input id="plan_id"></label>
 <section><button data-action="approve">5. 批准</button><button data-action="preflight">6. 预检</button>
 <button data-action="dry-run">7. 模拟执行</button></section><label>确认词 <input id="confirmation"></label>
 <button class="danger" data-action="execute">8. 真正复制</button><button data-action="doctor">诊断</button>
@@ -260,8 +317,9 @@ _HTML = """<!doctype html>
 <pre id="result">正在连接本地控制台…</pre></main><script src="/app.js"></script></body></html>"""
 _CSS = """body{font:16px system-ui;margin:0;background:#f6f7fb;color:#18212f}
 main{max-width:900px;margin:32px auto;padding:24px;background:#fff;border-radius:12px}label{display:block;margin:14px 0}
-input{display:block;width:100%;box-sizing:border-box;padding:9px;margin-top:5px}button{padding:10px;margin:5px}.danger{background:#a22;color:#fff}
+input,select{display:block;width:100%;box-sizing:border-box;padding:9px;margin-top:5px}button{padding:10px;margin:5px}.danger{background:#a22;color:#fff}
+fieldset{margin:20px 0;border:1px solid #bdc7d8;border-radius:8px}.check input{display:inline;width:auto;margin-right:8px}.hint{font-size:.9em;color:#4a5568}
 pre{white-space:pre-wrap;background:#111;color:#d8f8d8;padding:16px;border-radius:8px;min-height:120px}"""
 _JS = """let csrf;const byId=id=>document.getElementById(id),result=byId("result");
-async function call(action){const p={source:byId("source").value,output:byId("output").value,plan_id:byId("plan_id").value,transaction_id:byId("transaction_id").value,confirmation:byId("confirmation").value};const r=await fetch("/api/"+action,{method:"POST",headers:{"Content-Type":"application/json","X-SPT-CSRF":csrf},body:JSON.stringify(p)});const d=await r.json();result.textContent=JSON.stringify(d,null,2);if(d.plan_id)byId("plan_id").value=d.plan_id;if(d.transaction_id)byId("transaction_id").value=d.transaction_id;if(d.url)window.open(d.url,"_blank","noopener");}
-async function boot(){const d=await (await fetch("/api/bootstrap")).json();csrf=d.csrf_token;byId("workspace").value=d.workspace;result.textContent="准备就绪。";document.querySelectorAll("[data-action]").forEach(b=>b.onclick=()=>call(b.dataset.action));}boot().catch(e=>result.textContent=String(e));"""
+async function call(action){const p={source:byId("source").value,output:byId("output").value,plan_id:byId("plan_id").value,transaction_id:byId("transaction_id").value,confirmation:byId("confirmation").value,provider:byId("provider").value,model:byId("model").value,api_key:byId("api_key").value,allow_cloud:byId("allow_cloud").checked};if(action==="configure-cloud")p.confirmation=byId("cloud_confirmation").value;const r=await fetch("/api/"+action,{method:"POST",headers:{"Content-Type":"application/json","X-SPT-CSRF":csrf},body:JSON.stringify(p)});const d=await r.json();result.textContent=JSON.stringify(d,null,2);if(d.plan_id)byId("plan_id").value=d.plan_id;if(d.transaction_id)byId("transaction_id").value=d.transaction_id;if(d.url)window.open(d.url,"_blank","noopener");}
+async function boot(){const d=await (await fetch("/api/bootstrap")).json();csrf=d.csrf_token;byId("workspace").value=d.workspace;byId("allow_cloud").checked=Boolean(d.allow_cloud);result.textContent="准备就绪。";document.querySelectorAll("[data-action]").forEach(b=>b.onclick=()=>call(b.dataset.action));}boot().catch(e=>result.textContent=String(e));"""

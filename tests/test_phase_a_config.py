@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from smart_photo_triage.config import AppConfig, ConfigError, load_config
+from smart_photo_triage.config import AppConfig, ConfigError, load_config, save_config
 
 
 def test_t_a_002_default_config_disables_cloud() -> None:
@@ -14,6 +14,19 @@ def test_config_can_explicitly_enable_cloud(tmp_path: Path) -> None:
     path.write_text("allow_cloud = true\n", encoding="utf-8")
 
     assert load_config(path).allow_cloud is True
+
+
+def test_save_config_persists_only_the_supported_cloud_switch(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(path, AppConfig(allow_cloud=True))
+
+    assert path.read_text(encoding="utf-8") == "allow_cloud = true\n"
+    assert load_config(path) == AppConfig(allow_cloud=True)
+
+
+def test_save_config_rejects_a_non_boolean_cloud_switch(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="boolean"):
+        save_config(tmp_path / "config.toml", AppConfig(allow_cloud="true"))  # type: ignore[arg-type]
 
 
 def test_missing_config_is_rejected(tmp_path: Path) -> None:

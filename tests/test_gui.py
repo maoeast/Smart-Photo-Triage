@@ -16,7 +16,7 @@ def _json(url: str) -> dict[str, object]:
         return json.loads(response.read())
 
 
-def _post(base: str, action: str, csrf: str, payload: dict[str, str]) -> dict[str, object]:
+def _post(base: str, action: str, csrf: str, payload: dict[str, object]) -> dict[str, object]:
     request = Request(
         f"{base}/api/{action}",
         data=json.dumps(payload).encode(),
@@ -68,6 +68,41 @@ def test_local_gui_runs_safe_synthetic_copy_lifecycle(tmp_path: Path) -> None:
         common["transaction_id"] = str(executed["transaction_id"])
         assert _post(base, "rollback", csrf, common)["state"] == "ROLLED_BACK"
         assert not any(output.rglob("*.png"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_gui_cloud_authorization_requires_explicit_confirmation_and_never_stores_key(
+    tmp_path: Path,
+) -> None:
+    server = create_gui_server(tmp_path / "workspace")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address[:2]
+        base = f"http://{host}:{port}"
+        bootstrap = _json(f"{base}/api/bootstrap")
+        csrf = str(bootstrap["csrf_token"])
+        assert bootstrap["allow_cloud"] is False
+        try:
+            _post(base, "configure-cloud", csrf, {"allow_cloud": True, "confirmation": "wrong"})
+        except HTTPError as error:
+            assert error.code == 400
+        else:
+            raise AssertionError("GUI enabled cloud analysis without explicit confirmation")
+        result = _post(
+            base,
+            "configure-cloud",
+            csrf,
+            {"allow_cloud": True, "confirmation": "ALLOW_CLOUD", "api_key": "not-stored"},
+        )
+        assert result == {"allow_cloud": True, "api_key_stored": False}
+        assert _json(f"{base}/api/bootstrap")["allow_cloud"] is True
+        config = (tmp_path / "workspace" / "config.toml").read_text(encoding="utf-8")
+        assert config == "allow_cloud = true\n"
+        assert "not-stored" not in config
     finally:
         server.shutdown()
         server.server_close()
