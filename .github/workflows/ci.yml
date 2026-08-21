@@ -41,7 +41,9 @@ jobs:
             $venvPython = ".package-smoke-venv/bin/python"
             $spt = ".package-smoke-venv/bin/spt"
           }
-          & $venvPython -m pip install dist/*.whl
+          $wheel = (Get-ChildItem -Path dist -Filter *.whl | Select-Object -First 1).FullName
+          if (-not $wheel) { throw "No wheel was built in dist/" }
+          & $venvPython -m pip install $wheel
           $smokeRoot = Join-Path $env:RUNNER_TEMP "spt-wheel-smoke-$([guid]::NewGuid())"
           & $venvPython tests/fixtures/phase_h_installed_e2e.py $smokeRoot $spt
       - name: Upload distributions
