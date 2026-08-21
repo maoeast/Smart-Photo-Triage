@@ -3005,7 +3005,11 @@ def test_quarantine_delete_does_not_unlink_replacement_at_original_name(
         replace_opened_file,
         raising=False,
     )
-    executor._quarantine_delete(original, root, identity, prefix="identity-race")
+    if os.name == "nt":
+        executor._quarantine_delete(original, root, identity, prefix="identity-race")
+    else:
+        with pytest.raises(executor.RecoverySafetyError, match="identity changed"):
+            executor._quarantine_delete(original, root, identity, prefix="identity-race")
 
     assert original.read_bytes() == replacement
 

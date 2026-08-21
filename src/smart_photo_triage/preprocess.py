@@ -842,7 +842,42 @@ def _process_is_alive(pid: int, _token: str | None) -> bool:
     return True
 
 
-def _cleanup_stale_preprocess_runs(runs_root: Path) -> None:
+def _cleanup_stale_preprocess_runs(runs_binding: _SecureDirectoryBinding) -> None:
+    """Remove only proven-dead run directories through their held root binding."""
+    if runs_binding.directory_fd is not None:  # pragma: no cover - exercised on POSIX CI
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        for name in os.listdir(runs_binding.directory_fd):
+            try:
+                directory_stat = os.stat(
+                    name,
+                    dir_fd=runs_binding.directory_fd,
+                    follow_symlinks=False,
+                )
+            except OSError:
+                continue
+            if not stat.S_ISDIR(directory_stat.st_mode) or stat.S_ISLNK(directory_stat.st_mode):
+                continue
+            try:
+                directory_fd = os.open(name, flags, dir_fd=runs_binding.directory_fd)
+                try:
+                    owner_fd = os.open(
+                        "owner.json",
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=directory_fd,
+                    )
+                    with os.fdopen(owner_fd, "r", encoding="utf-8") as stream:
+                        owner = json.load(stream)
+                finally:
+                    os.close(directory_fd)
+                pid = int(owner["pid"])
+                token = str(owner["token"])
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                continue
+            if not _process_is_alive(pid, token):
+                _remove_posix_entry(runs_binding.directory_fd, name)
+        return
+
+    runs_root = runs_binding.access_path
     if not runs_root.is_dir():
         return
     for directory in runs_root.iterdir():
@@ -875,6 +910,15 @@ def _remove_posix_entry(  # pragma: no cover - exercised on POSIX
     actual_identity = _stat_identity(entry_stat)
     if expected_identity is not None and actual_identity != expected_identity:
         raise PreviewBusyError("artifact changed before secure cleanup")
+    if stat.S_ISDIR(entry_stat.st_mode):
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+        try:
+            opened_stat = os.fstat(descriptor)
+            if (opened_stat.st_dev, opened_stat.st_ino) != (entry_stat.st_dev, entry_stat.st_ino):
+                raise PreviewError("directory identity changed before secure deletion")
+        finally:
+            os.close(descriptor)
     quarantine = f".delete-{uuid4().hex}"
     os.rename(name, quarantine, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     bound_stat = os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
@@ -963,7 +1007,7 @@ def _owned_run_security(workspace_root: Path, run_id: str, owner_token: str):
             runs_binding = stack.enter_context(
                 _secure_workspace_directory(workspace_root, ("state", "preprocess-runs"))
             )
-            _cleanup_stale_preprocess_runs(runs_binding.access_path)
+            _cleanup_stale_preprocess_runs(runs_binding)
             run_binding = stack.enter_context(
                 _secure_workspace_directory(workspace_root, ("state", "preprocess-runs", run_id))
             )
