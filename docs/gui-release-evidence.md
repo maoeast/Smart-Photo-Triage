@@ -1,7 +1,7 @@
 # Local GUI release evidence
 
 Date: 2026-08-21
-Status: **PENDING_HOSTED_CI**
+Status: **READY_FOR_FINAL_ACCEPTANCE**
 
 ## Scope
 
@@ -33,5 +33,7 @@ by rollback.
 
 ## Hosted qualification
 
-The existing GitHub Actions matrix must pass on Windows/Linux and Python 3.11/3.13 for the commit
-containing this GUI extension before the status is changed to `READY_FOR_FINAL_ACCEPTANCE`.
+[GitHub Actions run 32492969931](https://github.com/maoeast/Smart-Photo-Triage/actions/runs/32492969931)
+passed on Windows/Linux and Python 3.11/3.13. Each matrix entry completed format, lint, full tests
+and coverage, distribution build, fresh wheel install, installed-package synthetic E2E, and artifact
+upload successfully.
