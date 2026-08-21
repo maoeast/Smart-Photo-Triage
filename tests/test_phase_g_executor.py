@@ -1501,10 +1501,7 @@ def test_core_path_and_quarantine_primitives_refuse_escape_and_identity_races(
         return identity
 
     monkeypatch.setattr(executor, "_stable_hash", mismatched_quarantine)
-    if os.name == "nt":
-        with pytest.raises(executor.RecoverySafetyError, match="binding deletion|identity changed"):
-            executor._quarantine_delete(race, root, race_identity, prefix="race")
-    else:
+    with pytest.raises(executor.RecoverySafetyError, match="binding deletion|identity changed"):
         executor._quarantine_delete(race, root, race_identity, prefix="race")
     assert race.read_bytes() == b"race"
 
