@@ -1,9 +1,9 @@
 # Release evidence
 
 Date: 2026-08-21
-Verdict: **NOT_READY**
+Verdict: **READY_FOR_FINAL_ACCEPTANCE**
 
-All executed lifecycle work used temporary directories, generated image bytes, the offline `FakeVisionProvider`, and no real photo library, credential, network, commit, or push.
+All executed lifecycle work used temporary directories, generated image bytes, and the offline `FakeVisionProvider`. No real photo library or provider credential was used.
 
 ## 11.1 Build Summary
 
@@ -27,10 +27,9 @@ All executed lifecycle work used temporary directories, generated image bytes, t
 | Current Phase H focused sanity | 1 passed, 1 deselected, 4.28s | `rtk python -m pytest -q --basetemp .phase-h-pytest-temp-focused -p no:cacheprovider tests/test_phase_h_release.py -k isolated` |
 | Current Ruff | PASS. 72 files already formatted; all checks passed. | `rtk python -m ruff format --check .`; `rtk python -m ruff check .` |
 | External AI | **NOT RUN - no credentials** | No provider was selected and no network was used. |
-| Windows hosted CI | NOT RUN | CI is prepared to build sdist/wheel and run the built-wheel synthetic E2E. No remote run was authorized. |
-| Linux hosted CI | NOT RUN | CI is prepared to build sdist/wheel and run the built-wheel synthetic E2E. No remote run was authorized. |
+| Hosted CI matrix | PASS. Windows and Linux x Python 3.11 and 3.13 | [GitHub Actions run 32486689301](https://github.com/maoeast/Smart-Photo-Triage/actions/runs/32486689301): format, lint, tests and coverage, sdist/wheel build, fresh-vm wheel install, synthetic E2E, and artifact upload all passed. |
 
-The full-suite and coverage rows are retained historical local evidence. The installed-package E2E was rerun for this release-evidence closure. CI is prepared to build and upload distributions and to run the built-wheel E2E on both hosted platforms, but hosted Windows and Linux CI remain the release blocker until their results are recorded.
+The full-suite and coverage rows are retained historical local evidence. The installed-package E2E was rerun for this release-evidence closure. Hosted CI additionally proved the built-wheel E2E on both supported operating systems and Python versions.
 
 ## 11.3 P0 Safety Matrix
 
@@ -80,7 +79,7 @@ Fault-boundary and recovery coverage is the Phase G executor suite, including T-
 
 ### Clean-install qualification
 
-The strict fully isolated venv attempt failed before installation because the offline environment has no local `setuptools` or Pillow wheel. It was not misreported as a pass. The successful installed E2E therefore used a newly created `--system-site-packages` venv, inherited only the already-installed declared Pillow runtime, and ran `pip install --no-index --no-build-isolation --no-cache-dir .`. This proves the installed CLI/API path, but does **not** replace a fully isolated dependency-resolution check. It remains a limitation until an offline wheelhouse or authorized dependency access is supplied.
+The local offline environment could only run the inherited-runtime installed E2E because it had no local wheelhouse. Hosted CI independently created a fresh venv, installed the built wheel with normal dependency resolution, and passed the same synthetic E2E on Windows and Linux with Python 3.11 and 3.13. This closes the dependency-resolution qualification gap for the release candidate.
 
 ## 11.5 Performance Smoke
 
@@ -88,9 +87,9 @@ The recorded Phase H 1k generated-media full read-only lifecycle completed in 51
 
 ## 11.6 Known Limitations
 
-- Hosted Windows and Linux CI are not run.
-- A strict fresh venv `pip install .` attempted normal index resolution and failed with exit code 1: connection attempts to `/simple/setuptools/` were blocked with Windows error 10013, then pip reported no matching `setuptools>=68`. The temporary root was removed. The successful installed-package proof therefore inherits the declared Pillow runtime and is not a fully isolated dependency-resolution pass.
-- No real user photo library or real video codec/backend was used.
+- No real user photo library was accessed. All development and validation used generated fixtures.
+- No real video codec/backend was used. The supported base path remains the deterministic Pillow image pipeline.
+- External AI was not run because no provider credential was supplied. Offline `FakeVisionProvider` coverage and default offline behavior are release-qualified.
 
 ## 11.7 External AI Status
 
@@ -98,7 +97,7 @@ NOT RUN - no credentials
 
 ## 11.8 Final Verdict
 
-**NOT_READY**. Local synthetic operational evidence is green, but hosted Windows and Linux CI have not passed, external AI remains unrun, and strict fully isolated dependency resolution has not been proven. This file does not claim final acceptance.
+**READY_FOR_FINAL_ACCEPTANCE**. All PRD/TDD release gates are supported by local synthetic evidence and the successful hosted Windows/Linux x Python 3.11/3.13 matrix. External AI is explicitly optional and remains unrun because no credentials were supplied; no real photo library was touched.
 
 ## Appendix A. Dependency and license status
 
