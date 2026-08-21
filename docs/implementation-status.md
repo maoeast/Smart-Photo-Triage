@@ -1,5 +1,14 @@
 # Implementation status
 
+## v1.2.1 model-routing upgrade
+
+In progress. The implementation adds an additive SQLite v12 migration for provider cache and route
+audit, a Provider Registry with capability contract, Gemini/OpenAI/Anthropic/OpenAI-compatible
+adapters, deterministic ITEM_ANALYSIS/BURST_REVIEW routing, privacy scope gates, bounded fallback,
+low-confidence escalation, budget state, and zero-network CLI observability. Final status is
+determined only by the current v1.2.1 full regression, coverage, synthetic multi-provider E2E, and
+`docs/release-evidence-v1.2.1.md`; it is not inherited from the v1.2.0 evidence below.
+
 ## Current phase
 
 Phase H. Local E2E, performance, and release-candidate evidence.

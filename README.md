@@ -64,6 +64,12 @@ bypass the immutable plan, approval, preflight, journal, hash verification, or r
 For the complete Chinese installation, start/stop, uninstall, button-by-button, review, recovery,
 and rollback guide, see [the local GUI user manual](docs/USER_MANUAL_zh-CN.md).
 
+## v1.2.1 model routing
+
+v1.2.1 adds provider registry, capability profiles, deterministic per-task routes, bounded fallback,
+one-step low-confidence escalation, provider-result cache, route audit, and request/byte/cost budgets.
+Cloud and LAN remain opt-in. See [the provider, privacy, configuration, and upgrade guide](docs/model-routing-v1.2.1.md).
+
 ## Read-only scan
 
 ```powershell

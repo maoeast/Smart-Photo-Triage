@@ -1170,3 +1170,107 @@ def analyze_workspace(
         request_count=request_count,
         failures=tuple(sorted(failures)),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _RoutedProviderIdentity:
+    """Compatibility projection for the v1.2 ``ai_analysis`` history table."""
+
+    name: str
+    model: str
+    is_cloud: bool = False
+
+
+def analyze_workspace_routed(
+    workspace: Workspace,
+    *,
+    router: object,
+    options: AnalysisOptions = _DEFAULT_ANALYSIS_OPTIONS,
+    allow_cloud: bool = False,
+    allow_lan: bool = False,
+) -> AnalyzeResult:
+    """Run ITEM_ANALYSIS through v1.2.1 routing without granting it file authority.
+
+    Controlled previews are read by this existing Phase D boundary.  The router receives
+    only a ``VisionRequest`` and its outcome is persisted separately from HUMAN decisions.
+    """
+    from smart_photo_triage.model_routing import ModelRouter, TaskType
+    from smart_photo_triage.routing_storage import SQLiteProviderCache, persist_route_execution
+
+    if not isinstance(router, ModelRouter):
+        raise TypeError("router must be a ModelRouter")
+    run_id = uuid4().hex
+    analyzed_count = 0
+    cache_hit_count = 0
+    request_count = 0
+    failures: list[tuple[int, str]] = []
+    with _database_boundary(workspace.database_path) as connection:
+        router.cache = SQLiteProviderCache(connection)
+        rows = connection.execute(
+            """
+            SELECT m.id,m.media_type,p.preview_path,p.preview_version,p.preview_fingerprint,
+                   p.preview_sha256,p.quality_json
+            FROM media_item AS m JOIN media_preprocess AS p ON p.media_id=m.id
+            WHERE m.source_present=1 AND m.media_type IN ('IMAGE','VIDEO')
+              AND p.preview_status='READY'
+            ORDER BY m.id
+            """
+        )
+        for row in rows:
+            media_id = int(row[0])
+            descriptor = _PendingDescriptor(
+                item_id=media_id,
+                media_type=str(row[1]),
+                preview_path=str(row[2]),
+                preview_version=str(row[3]),
+                preview_fingerprint=str(row[4]),
+                preview_sha256=str(row[5]),
+                quality=_anonymous_quality(row[6]),
+                input_fingerprint="routed-v121",
+                upload_bytes=0,
+            )
+            pending, load_failures = _load_pending_batch(workspace, [descriptor])
+            failures.extend(load_failures)
+            if not pending:
+                continue
+            item = pending[0]
+            execution = router.run(
+                TaskType.ITEM_ANALYSIS,
+                VisionRequest(
+                    items=(item.request_item,),
+                    prompt_version=options.prompt_version,
+                    schema_version=options.schema_version,
+                ),
+                allow_cloud=allow_cloud,
+                allow_lan=allow_lan,
+            )
+            persist_route_execution(connection, execution)
+            cache_hit_count += sum(1 for attempt in execution.attempts if attempt.cache_hit)
+            request_count += execution.request_count
+            if execution.result is None or execution.effective_provider_id is None:
+                failures.append((media_id, "ROUTED_PROVIDER_FAILURE"))
+                continue
+            effective_attempt = next(
+                attempt
+                for attempt in reversed(execution.attempts)
+                if attempt.provider_id == execution.effective_provider_id
+            )
+            analysis = execution.result.get(media_id)
+            if analysis is None:
+                failures.append((media_id, "ROUTED_SCHEMA_ERROR"))
+                continue
+            identity = _RoutedProviderIdentity(
+                name=execution.effective_provider_id,
+                model=effective_attempt.model,
+            )
+            _persist_analysis(connection, item, analysis, identity, options)
+            connection.commit()
+            analyzed_count += 1
+    return AnalyzeResult(
+        run_id=run_id,
+        analyzed_count=analyzed_count,
+        cache_hit_count=cache_hit_count,
+        failed_count=len(failures),
+        request_count=request_count,
+        failures=tuple(sorted(failures)),
+    )

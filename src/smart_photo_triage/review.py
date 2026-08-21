@@ -166,6 +166,8 @@ effective AS (
         a.disposition AS ai_disposition,
         a.confidence AS ai_confidence,
         a.quality_score AS ai_quality_score,
+        a.provider AS ai_provider,
+        a.model AS ai_model,
         a.tags_json,
         a.short_desc,
         a.reason AS ai_reason,
@@ -375,6 +377,8 @@ class ReviewStore:
                 "ai_disposition": ai_disposition,
                 "ai_confidence": _optional_number(row["ai_confidence"]),
                 "ai_quality_score": _optional_number(row["ai_quality_score"]),
+                "ai_provider": _optional_text(row["ai_provider"], maximum=200),
+                "ai_model": _optional_text(row["ai_model"], maximum=500),
                 "ai_reason": _optional_text(row["ai_reason"]),
                 "tags": _json_list(row["tags_json"]),
                 "short_desc": _optional_text(row["short_desc"]),
@@ -596,7 +600,7 @@ function openLightbox(item) {
   byId("lightbox-image").src = item.preview_url || "";
   byId("lightbox-image").alt = item.filename;
   byId("lightbox-title").textContent = item.filename;
-  byId("lightbox-detail").textContent = `AI 原因：${item.ai_reason || "无"}。置信度：${item.ai_confidence ?? "无"}。本地质量：${JSON.stringify(item.quality)}`;
+  byId("lightbox-detail").textContent = `提供方：${item.ai_provider || "无"}。模型：${item.ai_model || "无"}。AI 原因：${item.ai_reason || "无"}。置信度：${item.ai_confidence ?? "无"}。本地质量：${JSON.stringify(item.quality)}`;
   byId("lightbox").showModal();
 }
 
@@ -630,6 +634,7 @@ function renderCard(item) {
   const description = document.createElement("p"); description.textContent = item.short_desc || "无 AI 描述"; body.append(description);
   const reason = document.createElement("p"); reason.textContent = `AI 原因：${item.ai_reason || "无"}`; body.append(reason);
   const confidence = document.createElement("p"); confidence.textContent = `置信度：${item.ai_confidence ?? "无"}。质量：${item.local_quality_score ?? "无"}`; body.append(confidence);
+  const provider = document.createElement("p"); provider.textContent = `提供方：${item.ai_provider || "无"}。模型：${item.ai_model || "无"}`; body.append(provider);
   const groupButtons = document.createElement("div"); groupButtons.className = "quick";
   if (item.duplicate_group) { const button = document.createElement("button"); button.type = "button"; button.textContent = "查看精确重复组"; button.addEventListener("click", () => setGroup("duplicate", item.duplicate_group)); groupButtons.append(button); }
   if (item.burst_group) { const button = document.createElement("button"); button.type = "button"; button.textContent = "查看连拍组"; button.addEventListener("click", () => setGroup("burst", item.burst_group)); groupButtons.append(button); }

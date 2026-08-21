@@ -524,6 +524,66 @@ MIGRATIONS = (
             """,
         ),
     ),
+    Migration(
+        version=12,
+        name="create_v121_provider_cache_and_route_audit",
+        statements=(
+            """
+            CREATE TABLE provider_analysis_cache (
+                cache_key TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL CHECK (task_type IN ('item_analysis', 'burst_review')),
+                provider_id TEXT NOT NULL,
+                driver TEXT NOT NULL,
+                model TEXT NOT NULL,
+                endpoint_identity TEXT NOT NULL,
+                capability_profile_version TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE INDEX provider_analysis_cache_provider_idx
+            ON provider_analysis_cache(provider_id, model, created_at)
+            """,
+            """
+            CREATE TABLE ai_route_run (
+                id TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL CHECK (task_type IN ('item_analysis', 'burst_review')),
+                started_at TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                effective_provider_id TEXT,
+                effective_model TEXT,
+                escalated INTEGER NOT NULL CHECK (escalated IN (0, 1)),
+                attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0)
+            )
+            """,
+            """
+            CREATE INDEX ai_route_run_task_idx
+            ON ai_route_run(task_type, started_at)
+            """,
+            """
+            CREATE TABLE ai_route_attempt (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                route_run_id TEXT NOT NULL REFERENCES ai_route_run(id) ON DELETE CASCADE,
+                attempt_index INTEGER NOT NULL CHECK (attempt_index >= 1),
+                provider_id TEXT NOT NULL,
+                driver TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_class TEXT,
+                cache_hit INTEGER NOT NULL CHECK (cache_hit IN (0, 1)),
+                remote_preview_bytes INTEGER NOT NULL CHECK (remote_preview_bytes >= 0),
+                route_reason TEXT NOT NULL,
+                UNIQUE(route_run_id, attempt_index)
+            )
+            """,
+            """
+            CREATE INDEX ai_route_attempt_provider_idx
+            ON ai_route_attempt(provider_id, model, status)
+            """,
+        ),
+    ),
 )
 
 _SCAN_RUN_COLUMNS_V2 = (
@@ -794,6 +854,41 @@ _REQUIRED_COLUMNS = {
         ("created_at", "TEXT", 1, 0),
         ("updated_at", "TEXT", 1, 0),
     ),
+    "provider_analysis_cache": (
+        ("cache_key", "TEXT", 0, 1),
+        ("task_type", "TEXT", 1, 0),
+        ("provider_id", "TEXT", 1, 0),
+        ("driver", "TEXT", 1, 0),
+        ("model", "TEXT", 1, 0),
+        ("endpoint_identity", "TEXT", 1, 0),
+        ("capability_profile_version", "TEXT", 1, 0),
+        ("result_json", "TEXT", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+    ),
+    "ai_route_run": (
+        ("id", "TEXT", 0, 1),
+        ("task_type", "TEXT", 1, 0),
+        ("started_at", "TEXT", 1, 0),
+        ("completed_at", "TEXT", 1, 0),
+        ("status", "TEXT", 1, 0),
+        ("effective_provider_id", "TEXT", 0, 0),
+        ("effective_model", "TEXT", 0, 0),
+        ("escalated", "INTEGER", 1, 0),
+        ("attempt_count", "INTEGER", 1, 0),
+    ),
+    "ai_route_attempt": (
+        ("id", "INTEGER", 0, 1),
+        ("route_run_id", "TEXT", 1, 0),
+        ("attempt_index", "INTEGER", 1, 0),
+        ("provider_id", "TEXT", 1, 0),
+        ("driver", "TEXT", 1, 0),
+        ("model", "TEXT", 1, 0),
+        ("status", "TEXT", 1, 0),
+        ("error_class", "TEXT", 0, 0),
+        ("cache_hit", "INTEGER", 1, 0),
+        ("remote_preview_bytes", "INTEGER", 1, 0),
+        ("route_reason", "TEXT", 1, 0),
+    ),
 }
 
 _TABLE_VERSION = {
@@ -819,6 +914,9 @@ _TABLE_VERSION = {
     "plan_approval": 11,
     "operation_transaction": 11,
     "operation_journal": 11,
+    "provider_analysis_cache": 12,
+    "ai_route_run": 12,
+    "ai_route_attempt": 12,
 }
 
 
@@ -950,6 +1048,7 @@ _REQUIRED_UNIQUE_CONSTRAINTS = {
         ("plan_id", "position"),
         ("plan_id", "target_key"),
     ),
+    "ai_route_attempt": (("route_run_id", "attempt_index"),),
 }
 
 _REQUIRED_INDEXES = {
@@ -1011,6 +1110,17 @@ _REQUIRED_INDEXES = {
         False,
         ("transaction_id", "state", "id"),
     ),
+    "provider_analysis_cache_provider_idx": (
+        "provider_analysis_cache",
+        False,
+        ("provider_id", "model", "created_at"),
+    ),
+    "ai_route_run_task_idx": ("ai_route_run", False, ("task_type", "started_at")),
+    "ai_route_attempt_provider_idx": (
+        "ai_route_attempt",
+        False,
+        ("provider_id", "model", "status"),
+    ),
 }
 
 _INDEX_VERSION = {
@@ -1032,6 +1142,9 @@ _INDEX_VERSION = {
     "plan_approval_state_idx": 11,
     "operation_transaction_state_idx": 11,
     "operation_journal_transaction_idx": 11,
+    "provider_analysis_cache_provider_idx": 12,
+    "ai_route_run_task_idx": 12,
+    "ai_route_attempt_provider_idx": 12,
 }
 
 _REQUIRED_FOREIGN_KEYS = {
@@ -1070,6 +1183,7 @@ _REQUIRED_FOREIGN_KEYS = {
             "NO ACTION",
         )
     },
+    "ai_route_attempt": {("route_run_id", "ai_route_run", "id", "NO ACTION", "CASCADE")},
 }
 
 _REQUIRED_TRIGGERS = {

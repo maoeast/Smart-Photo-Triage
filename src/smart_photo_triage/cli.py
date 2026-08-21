@@ -21,9 +21,10 @@ from smart_photo_triage.ai import (
     FakeVisionProvider,
     GeminiVisionProvider,
     analyze_workspace,
+    analyze_workspace_routed,
     estimate_workspace_analysis,
 )
-from smart_photo_triage.config import ConfigError, load_config
+from smart_photo_triage.config import ConfigError, load_config, normalized_ai_config
 from smart_photo_triage.executor import (
     ExecutorError,
     apply_plan,
@@ -33,6 +34,7 @@ from smart_photo_triage.executor import (
 )
 from smart_photo_triage.grouping import group_workspace
 from smart_photo_triage.gui import serve_gui
+from smart_photo_triage.model_routing import ModelRouter, ProviderRegistry, TaskType
 from smart_photo_triage.planner import (
     PlannerError,
     PlannerOptions,
@@ -44,6 +46,7 @@ from smart_photo_triage.planner import (
     revoke_plan,
 )
 from smart_photo_triage.preprocess import PreviewConfig, preprocess_workspace
+from smart_photo_triage.provider_drivers import build_driver
 from smart_photo_triage.review import ReviewError, serve_review
 from smart_photo_triage.scanner import (
     ScanLayoutError,
@@ -140,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="spt",
         description="Smart-Photo-Triage local-first media organization tooling.",
     )
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--version", action="version", version="%(prog)s 1.2.1")
     commands = parser.add_subparsers(dest="command")
     init_parser = commands.add_parser("init", help="Initialize an idempotent local workspace")
     init_parser.add_argument(
@@ -314,6 +317,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--port", type=_port_number, default=0, help="Local port; 0 selects an available port"
     )
     gui_parser.add_argument("--no-open", action="store_true", help="Do not open a browser")
+    ai_parser = commands.add_parser(
+        "ai", help="Inspect v1.2.1 provider routing without exposing secrets"
+    )
+    ai_commands = ai_parser.add_subparsers(dest="ai_command", required=True)
+    for command_name, help_text in (
+        ("providers", "List configured providers with redacted credential status"),
+        ("doctor", "Validate routing, privacy gates, and environment-key presence without network"),
+        ("estimate", "Show configured route and current READY-preview count without network"),
+        ("run", "Analyze controlled previews through configured v1.2.1 item route"),
+    ):
+        command = ai_commands.add_parser(command_name, help=help_text)
+        command.add_argument(
+            "--workspace", type=Path, default=Path(".spt"), help="Workspace path (default: .spt)"
+        )
+    explain_parser = ai_commands.add_parser("route", help="Explain one deterministic task route")
+    explain_commands = explain_parser.add_subparsers(dest="ai_route_command", required=True)
+    explain = explain_commands.add_parser(
+        "explain", help="Show primary, fallback, escalation, and privacy"
+    )
+    explain.add_argument("task_type", choices=("item_analysis", "burst_review"))
+    explain.add_argument(
+        "--workspace", type=Path, default=Path(".spt"), help="Workspace path (default: .spt)"
+    )
+    probe = ai_commands.add_parser(
+        "probe", help="Validate declared capability profile using synthetic metadata"
+    )
+    probe.add_argument("provider_id")
+    probe.add_argument(
+        "--workspace", type=Path, default=Path(".spt"), help="Workspace path (default: .spt)"
+    )
     plan_parser = commands.add_parser(
         "plan", help="Build, inspect, approve, and preflight immutable organization plans"
     )
@@ -383,6 +416,123 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_ai_router(workspace_path: Path) -> tuple[object, ProviderRegistry, ModelRouter]:
+    workspace = initialize_workspace(workspace_path)
+    config = normalized_ai_config(load_config(workspace.config_path))
+    registry = ProviderRegistry(config.providers)
+    router = ModelRouter(
+        registry,
+        config.route_map(),
+        max_provider_attempts_per_task=config.max_provider_attempts_per_task,
+    )
+    return workspace, registry, router
+
+
+def _ai_observability(args: argparse.Namespace) -> int:
+    try:
+        workspace, registry, router = _load_ai_router(args.workspace)
+    except (ConfigError, ValueError, sqlite3.Error, WorkspaceOwnershipError) as error:
+        print(f"AI configuration failed: {error}", file=sys.stderr)
+        return 2
+    config = normalized_ai_config(load_config(workspace.config_path))
+    if args.ai_command == "providers":
+        print(
+            json.dumps(
+                [provider.redacted_summary() for provider in registry.providers], ensure_ascii=False
+            )
+        )
+        return 0
+    if args.ai_command == "doctor":
+        report = {
+            "valid": True,
+            "network_requests": 0,
+            "allow_cloud": config.allow_cloud,
+            "allow_lan": config.allow_lan,
+            "providers": [provider.redacted_summary() for provider in registry.providers],
+            "routes": {task.value: policy.primary for task, policy in config.routes},
+        }
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
+    if args.ai_command == "route":
+        task = TaskType(args.task_type)
+        policy = router.routes[task]
+        selected = {
+            "task_type": task.value,
+            "primary": policy.primary,
+            "fallbacks": list(policy.fallbacks),
+            "escalation": (
+                {"confidence_below": policy.confidence_below, "to": policy.escalate_to}
+                if policy.escalate_to is not None
+                else None
+            ),
+            "privacy": {"allow_cloud": config.allow_cloud, "allow_lan": config.allow_lan},
+        }
+        print(json.dumps(selected, ensure_ascii=False))
+        return 0
+    if args.ai_command == "estimate":
+        with sqlite3.connect(workspace.database_path) as connection:
+            ready = connection.execute(
+                "SELECT COUNT(*) FROM media_preprocess WHERE preview_status='READY'"
+            ).fetchone()
+        print(
+            json.dumps(
+                {
+                    "ready_previews": int(ready[0]) if ready is not None else 0,
+                    "routes": {task.value: policy.primary for task, policy in config.routes},
+                    "pricing": "estimated only when configured per provider",
+                    "network_requests": 0,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    if args.ai_command == "run":
+        drivers: dict[str, object] = {}
+        for provider in registry.providers:
+            if provider.driver == "fake":
+                drivers[provider.provider_id] = FakeVisionProvider(model=provider.model)
+            elif provider.resolve_api_key() is not None:
+                drivers[provider.provider_id] = build_driver(provider)
+        router.drivers = drivers
+        try:
+            result = analyze_workspace_routed(
+                workspace,
+                router=router,
+                allow_cloud=config.allow_cloud,
+                allow_lan=config.allow_lan,
+            )
+        except (AnalysisError, ValueError, sqlite3.Error) as error:
+            print(f"AI route run failed: {error}", file=sys.stderr)
+            return 2
+        print(
+            "AI route run complete: "
+            f"analyzed={result.analyzed_count} cache_hits={result.cache_hit_count} "
+            f"failed={result.failed_count} requests={result.request_count}"
+        )
+        return 0
+    if args.ai_command == "probe":
+        try:
+            provider = registry.get(args.provider_id)
+        except KeyError:
+            print("AI probe failed: unknown provider", file=sys.stderr)
+            return 2
+        # This intentional offline probe validates declared capabilities only.  A real endpoint
+        # smoke is an explicit operator action and is not run by doctor or release tests.
+        print(
+            json.dumps(
+                {
+                    "provider_id": provider.provider_id,
+                    "synthetic_only": True,
+                    "network_requests": 0,
+                    "capability_profile_version": provider.capabilities.capability_profile_version,
+                    "status": "DECLARED_PROFILE_VALID",
+                }
+            )
+        )
+        return 0
+    raise AssertionError(f"unsupported ai subcommand: {args.ai_command}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -390,6 +540,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         workspace = initialize_workspace(args.workspace)
         _print_path_message("Workspace ready", workspace.root)
         return 0
+    if args.command == "ai":
+        return _ai_observability(args)
     if args.command == "scan":
         try:
             validate_scan_layout(args.source, args.workspace, args.output)

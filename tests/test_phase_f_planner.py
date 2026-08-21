@@ -510,7 +510,7 @@ def test_phase_f_migration_is_additive_and_legacy_statement_bytes_are_unchanged(
 ) -> None:
     workspace = initialize_workspace(tmp_path / "workspace")
 
-    assert MIGRATIONS[-1].version == 11
+    assert MIGRATIONS[-1].version >= 11
     for migration in MIGRATIONS[:10]:
         digest = hashlib.sha256("\0".join(migration.statements).encode()).hexdigest()
         assert digest == _LEGACY_MIGRATION_HASHES[migration.version]
@@ -519,7 +519,7 @@ def test_phase_f_migration_is_additive_and_legacy_statement_bytes_are_unchanged(
         == _PUBLISHED_V11_MIGRATION_HASH
     )
     with closing(connect_database(workspace.database_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (11,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (MIGRATIONS[-1].version,)
         assert {
             row[0]
             for row in connection.execute(
@@ -574,11 +574,11 @@ def test_populated_v10_database_upgrades_additively_and_missing_immutable_trigge
         )
         connection.commit()
 
-        assert apply_migrations(connection, workspace_id=workspace_id) == 11
+        assert apply_migrations(connection, workspace_id=workspace_id) == MIGRATIONS[-1].version
         assert connection.execute("SELECT original_path FROM media_item").fetchone() == (
             "legacy.jpg",
         )
-        assert apply_migrations(connection, workspace_id=workspace_id) == 11
+        assert apply_migrations(connection, workspace_id=workspace_id) == MIGRATIONS[-1].version
         connection.execute("DROP TRIGGER plan_entry_no_update")
         connection.commit()
         with pytest.raises(MigrationError, match="missing critical trigger"):
