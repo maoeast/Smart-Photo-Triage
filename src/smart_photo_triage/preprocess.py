@@ -1610,6 +1610,12 @@ def preprocess_workspace(
                             "preprocess deferred media_id=%s reason=%s", media_id, error
                         )
                     except Exception as error:
+                        _LOGGER.warning(
+                            "preprocess failed media_id=%s reason=%s: %s",
+                            media_id,
+                            type(error).__name__,
+                            error,
+                        )
                         if published is not None:
                             with suppress(OSError, PreviewError):
                                 _secure_remove_artifact(

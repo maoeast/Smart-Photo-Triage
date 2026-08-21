@@ -63,7 +63,7 @@ def _peak_rss_bytes() -> int | None:
         if not get_memory_info(current_process(), byref(counters), sizeof(counters)):
             return None
         return int(counters.peak_working_set_size)
-    except (AttributeError, OSError):
+    except (ImportError, AttributeError, OSError):
         return None
 
 

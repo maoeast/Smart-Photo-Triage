@@ -25,7 +25,7 @@ jobs:
       - name: Lint
         run: python -m ruff check .
       - name: Test and coverage
-        run: python -m pytest --cov=smart_photo_triage --cov-report=term-missing
+        run: python -m pytest --log-cli-level=WARNING --cov=smart_photo_triage --cov-report=term-missing
       - name: Build distributions
         run: |
           python -m pip install build

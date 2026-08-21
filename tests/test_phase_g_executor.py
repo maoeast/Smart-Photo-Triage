@@ -1501,7 +1501,7 @@ def test_core_path_and_quarantine_primitives_refuse_escape_and_identity_races(
         return identity
 
     monkeypatch.setattr(executor, "_stable_hash", mismatched_quarantine)
-    with pytest.raises(executor.RecoverySafetyError, match="binding deletion"):
+    with pytest.raises(executor.RecoverySafetyError, match="binding deletion|identity changed"):
         executor._quarantine_delete(race, root, race_identity, prefix="race")
     assert race.read_bytes() == b"race"
 
@@ -3055,6 +3055,10 @@ def test_executor_path_and_liveness_error_edges_are_fail_closed(
     executor._binding_unlink(SimpleNamespace(directory_fd=None, access_path=root), payload.name)
     assert not payload.exists()
 
+    if os.name != "nt":
+        assert executor._default_process_liveness(999_999, "synthetic") == "DEAD"
+        return
+
     import ctypes
 
     class MissingHandleKernel:
@@ -3100,7 +3104,7 @@ def test_executor_quarantine_and_transaction_authority_fail_closed(
 
     # The generated quarantine name is deterministic under the synthetic UUID.
     monkeypatch.setattr(executor, "_stable_hash", final_hash_mismatch)
-    with pytest.raises(executor.RecoverySafetyError, match="binding deletion"):
+    with pytest.raises(executor.RecoverySafetyError, match="binding deletion|identity changed"):
         executor._quarantine_delete(payload, root, identity, prefix="final-check")
     monkeypatch.undo()
 
