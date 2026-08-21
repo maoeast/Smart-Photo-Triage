@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-photo-triage"
+version = "0.1.0"
+description = "Local-first photo triage and organization tooling"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Smart-Photo-Triage contributors" }]
+dependencies = ["Pillow>=10.4,<13"]
+
+[project.optional-dependencies]
+dev = [
+  "coverage[toml]>=7.6,<8",
+  "pytest>=8.3,<9",
+  "pytest-cov>=5,<7",
+  "ruff>=0.8,<1",
+]
+heic = ["pillow-heif>=0.20,<2"]
+
+[project.scripts]
+spt = "smart_photo_triage.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+omit = ["src/smart_photo_triage/__main__.py"]
+source = ["smart_photo_triage"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

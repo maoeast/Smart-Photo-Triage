@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: python -m pip install ".[dev]"
+      - name: Format
+        run: python -m ruff format --check .
+      - name: Lint
+        run: python -m ruff check .
+      - name: Test and coverage
+        run: python -m pytest --cov=smart_photo_triage --cov-report=term-missing
+      - name: Build distributions
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Installed wheel synthetic E2E
+        shell: pwsh
+        run: |
+          python -m venv .package-smoke-venv
+          if ($IsWindows) {
+            $venvPython = ".package-smoke-venv\Scripts\python.exe"
+            $spt = ".package-smoke-venv\Scripts\spt.exe"
+          } else {
+            $venvPython = ".package-smoke-venv/bin/python"
+            $spt = ".package-smoke-venv/bin/spt"
+          }
+          & $venvPython -m pip install dist/*.whl
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "spt-wheel-smoke-$([guid]::NewGuid())"
+          & $venvPython tests/fixtures/phase_h_installed_e2e.py $smokeRoot $spt
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributions-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/
+          if-no-files-found: error
