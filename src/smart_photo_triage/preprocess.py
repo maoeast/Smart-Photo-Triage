@@ -1094,7 +1094,13 @@ def _secure_workspace_directory(
             close_handle(handle)
 
 
-def _secure_publish(candidate: Path, destination: Path, workspace_root: Path) -> None:
+def _secure_publish(
+    candidate: Path,
+    destination: Path,
+    workspace_root: Path,
+    *,
+    candidate_binding: _SecureDirectoryBinding | None = None,
+) -> None:
     relative = destination.relative_to(workspace_root)
     with _secure_workspace_directory(workspace_root, relative.parts[:-1]) as destination_binding:
         if os.name == "nt":
@@ -1104,7 +1110,12 @@ def _secure_publish(candidate: Path, destination: Path, workspace_root: Path) ->
             return
 
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-        candidate_descriptor = os.open(candidate.parent, directory_flags)
+        candidate_descriptor = (
+            candidate_binding.directory_fd
+            if candidate_binding is not None
+            else os.open(candidate.parent, directory_flags)
+        )
+        owns_candidate_descriptor = candidate_binding is None
         try:
             if _SECURE_PUBLISH_TEST_HOOK is not None:
                 _SECURE_PUBLISH_TEST_HOOK(destination.parent)
@@ -1115,7 +1126,8 @@ def _secure_publish(candidate: Path, destination: Path, workspace_root: Path) ->
                 dst_dir_fd=destination_binding.directory_fd,
             )
         finally:
-            os.close(candidate_descriptor)
+            if owns_candidate_descriptor:
+                os.close(candidate_descriptor)
 
 
 def _validate_cached_preview(
@@ -1564,7 +1576,12 @@ def preprocess_workspace(
                         identity_after = _stable_source_identity(source, source_root)
                         if identity_after != identity_before:
                             raise PreviewError("source changed during preview generation")
-                        _secure_publish(candidate, destination, workspace.root)
+                        _secure_publish(
+                            candidate,
+                            destination,
+                            workspace.root,
+                            candidate_binding=candidate_binding,
+                        )
                         try:
                             published = _published_artifact_sha256(
                                 destination,
