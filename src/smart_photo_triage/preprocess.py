@@ -1615,6 +1615,7 @@ def preprocess_workspace(
                             media_id,
                             type(error).__name__,
                             error,
+                            exc_info=True,
                         )
                         if published is not None:
                             with suppress(OSError, PreviewError):
