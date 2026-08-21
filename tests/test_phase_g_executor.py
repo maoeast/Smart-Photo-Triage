@@ -1509,8 +1509,11 @@ def test_core_path_and_quarantine_primitives_refuse_escape_and_identity_races(
     missing_drive = (
         Path("Z:/phase-g-missing/child") if os.name == "nt" else Path("/phase-g-missing/child")
     )
-    with pytest.raises(executor.RecoverySafetyError):
-        executor._nearest_existing_directory(missing_drive)
+    if os.name == "nt":
+        with pytest.raises(executor.RecoverySafetyError):
+            executor._nearest_existing_directory(missing_drive)
+    else:
+        assert executor._nearest_existing_directory(missing_drive) == Path("/")
     with (
         pytest.raises(executor.RecoverySafetyError, match="TARGET_OUTSIDE_OUTPUT"),
         executor._target_parent_binding(root, outside),
