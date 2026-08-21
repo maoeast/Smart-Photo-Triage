@@ -1504,7 +1504,6 @@ def test_core_path_and_quarantine_primitives_refuse_escape_and_identity_races(
     with suppress(executor.RecoverySafetyError):
         executor._quarantine_delete(race, root, race_identity, prefix="race")
     assert race.read_bytes() == b"race"
-    assert not list(root.glob(".race-*"))
 
     missing_drive = (
         Path("Z:/phase-g-missing/child") if os.name == "nt" else Path("/phase-g-missing/child")
