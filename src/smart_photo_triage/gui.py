@@ -7,7 +7,7 @@ import json
 import secrets
 import threading
 import webbrowser
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,22 +16,46 @@ from urllib.parse import urlsplit
 from smart_photo_triage.ai import (
     AnalysisOptions,
     FakeVisionProvider,
-    GeminiVisionProvider,
-    analyze_workspace,
+    analyze_workspace_routed,
 )
-from smart_photo_triage.config import AppConfig, load_config, save_config
+from smart_photo_triage.config import (
+    AppConfig,
+    load_config,
+    normalized_ai_config,
+    save_ai_config,
+    save_config,
+)
 from smart_photo_triage.executor import apply_plan, doctor_workspace, rollback_transaction
 from smart_photo_triage.grouping import group_workspace
+from smart_photo_triage.gui_assets import CSS, HTML, JS, SETTINGS_HTML
+from smart_photo_triage.model_routing import (
+    ModelRouter,
+    ProviderConfig,
+    ProviderRegistry,
+    RoutePolicy,
+    TaskType,
+    builtin_capabilities,
+    classify_endpoint,
+)
 from smart_photo_triage.planner import PlannerOptions, approve_plan, build_plan, preflight_plan
 from smart_photo_triage.preprocess import PreviewConfig, preprocess_workspace
+from smart_photo_triage.provider_drivers import build_driver
 from smart_photo_triage.review import create_review_server
 from smart_photo_triage.scanner import scan_library, validate_scan_layout
 from smart_photo_triage.workspace import Workspace, initialize_workspace
 
 _MAX_REQUEST_BYTES = 16_384
 _CLOUD_CONFIRMATION = "ALLOW_CLOUD"
+_LAN_CONFIRMATION = "ALLOW_LAN"
 _EXECUTE_CONFIRMATION = "EXECUTE"
 _ROLLBACK_CONFIRMATION = "ROLLBACK"
+_GUI_VERSION = "1.2.1"
+_DEFAULT_PROVIDER_URLS = {
+    "fake": "http://127.0.0.1:9999/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta",
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/v1",
+}
 
 
 def _result(value: object) -> object:
@@ -40,6 +64,134 @@ def _result(value: object) -> object:
     if is_dataclass(value):
         return asdict(value)
     return value
+
+
+def _ai_summary(workspace: Workspace) -> dict[str, object]:
+    config = normalized_ai_config(load_config(workspace.config_path))
+    routes = config.route_map()
+    return {
+        "version": _GUI_VERSION,
+        "allow_cloud": config.allow_cloud,
+        "allow_lan": config.allow_lan,
+        "providers": [
+            {
+                **provider.redacted_summary(),
+                "display_name": provider.display_name,
+                "base_url": provider.base_url,
+                "api_key_env": provider.api_key_env,
+            }
+            for provider in config.providers
+        ],
+        "routes": {
+            task_type.value: {
+                "primary": route.primary,
+                "fallbacks": list(route.fallbacks),
+                "confidence_below": route.confidence_below,
+                "escalate_to": route.escalate_to,
+            }
+            for task_type, route in routes.items()
+        },
+    }
+
+
+def _router_from_workspace_config(workspace: Workspace) -> tuple[AppConfig, ModelRouter]:
+    config = normalized_ai_config(load_config(workspace.config_path))
+    registry = ProviderRegistry(config.providers)
+    drivers: dict[str, object] = {}
+    for provider in registry.providers:
+        if provider.driver == "fake":
+            drivers[provider.provider_id] = FakeVisionProvider(model=provider.model)
+        elif provider.resolve_api_key() is not None:
+            drivers[provider.provider_id] = build_driver(provider)
+    return config, ModelRouter(
+        registry,
+        config.route_map(),
+        drivers=drivers,
+        budget=config.budget,
+        max_provider_attempts_per_task=config.max_provider_attempts_per_task,
+    )
+
+
+def _choose_directory(*, title: str, initial_directory: Path) -> str | None:
+    """Open the OS folder chooser only on the local interactive desktop."""
+    try:
+        import tkinter
+        from tkinter import filedialog
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            selected = filedialog.askdirectory(
+                parent=root,
+                title=title,
+                initialdir=str(initial_directory) if initial_directory.is_dir() else None,
+                mustexist=True,
+            )
+        finally:
+            root.destroy()
+    except Exception as error:  # noqa: BLE001
+        raise ValueError(
+            "native directory picker is unavailable in this desktop session"
+        ) from error
+    return str(Path(selected)) if selected else None
+
+
+def _optional_text(payload: dict[str, object], key: str, *, maximum: int = 4096) -> str | None:
+    value = payload.get(key, "")
+    if not isinstance(value, str) or len(value) > maximum:
+        raise ValueError(f"{key} is invalid")
+    return value.strip() or None
+
+
+def _provider_from_payload(payload: dict[str, object]) -> ProviderConfig:
+    driver = _choice(
+        payload,
+        "driver",
+        {"fake", "gemini", "openai", "anthropic", "openai_compatible"},
+        default="fake",
+    )
+    base_url = _optional_text(payload, "base_url", maximum=1024) or _DEFAULT_PROVIDER_URLS.get(
+        driver
+    )
+    if base_url is None:
+        raise ValueError("OpenAI-compatible providers require a base URL")
+    return ProviderConfig(
+        provider_id=_required_text(payload, "provider_id", maximum=64),
+        driver=driver,
+        model=_required_text(payload, "model", maximum=256),
+        base_url=base_url,
+        network_scope=classify_endpoint(base_url),
+        capabilities=builtin_capabilities(driver),
+        display_name=_optional_text(payload, "display_name", maximum=128),
+        api_key_env=_optional_text(payload, "api_key_env", maximum=128),
+    )
+
+
+def _csv_provider_ids(payload: dict[str, object], key: str) -> tuple[str, ...]:
+    raw = _optional_text(payload, key, maximum=1024)
+    if raw is None:
+        return ()
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if len(values) != len(set(values)):
+        raise ValueError(f"{key} contains duplicate provider IDs")
+    return values
+
+
+def _route_from_payload(payload: dict[str, object], prefix: str) -> RoutePolicy:
+    primary = _required_text(payload, f"{prefix}_primary", maximum=64)
+    fallbacks = _csv_provider_ids(payload, f"{prefix}_fallbacks")
+    threshold_text = _optional_text(payload, f"{prefix}_confidence_below", maximum=32)
+    escalation = _optional_text(payload, f"{prefix}_escalate_to", maximum=64)
+    if threshold_text is None and escalation is None:
+        return RoutePolicy(primary, fallbacks)
+    if threshold_text is None or escalation is None:
+        raise ValueError(f"{prefix} escalation needs a provider and confidence threshold")
+    try:
+        threshold = float(threshold_text)
+    except ValueError as error:
+        raise ValueError(f"{prefix} confidence threshold is invalid") from error
+    return RoutePolicy(primary, fallbacks, threshold, escalation, 1)
 
 
 class GuiHTTPServer(ThreadingHTTPServer):
@@ -103,21 +255,27 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             return
         target = urlsplit(self.path)
         if target.path == "/":
-            self._send(HTTPStatus.OK, _HTML.encode(), "text/html; charset=utf-8")
+            self._send(HTTPStatus.OK, HTML.encode(), "text/html; charset=utf-8")
+        elif target.path == "/settings":
+            self._send(HTTPStatus.OK, SETTINGS_HTML.encode(), "text/html; charset=utf-8")
         elif target.path == "/app.js":
-            self._send(HTTPStatus.OK, _JS.encode(), "text/javascript; charset=utf-8")
+            self._send(HTTPStatus.OK, JS.encode(), "text/javascript; charset=utf-8")
         elif target.path == "/app.css":
-            self._send(HTTPStatus.OK, _CSS.encode(), "text/css; charset=utf-8")
+            self._send(HTTPStatus.OK, CSS.encode(), "text/css; charset=utf-8")
+        elif target.path == "/favicon.ico":
+            self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
         elif target.path == "/api/bootstrap":
+            ai = _ai_summary(self.server.workspace)
             self._json(
                 HTTPStatus.OK,
                 {
                     "csrf_token": self.server.csrf_token,
                     "workspace": str(self.server.workspace.root),
-                    "allow_cloud": load_config(self.server.workspace.config_path).allow_cloud,
                     "cloud_confirmation": _CLOUD_CONFIRMATION,
+                    "lan_confirmation": _LAN_CONFIRMATION,
                     "execute_confirmation": _EXECUTE_CONFIRMATION,
                     "rollback_confirmation": _ROLLBACK_CONFIRMATION,
+                    **ai,
                 },
             )
         elif target.path == "/api/doctor":
@@ -161,6 +319,24 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
 
     def _run(self, action: str, payload: dict[str, object]) -> object:
         workspace = self.server.workspace
+        if action == "choose-directory":
+            field = _choice(payload, "field", {"workspace", "source", "output"}, default="source")
+            selected = _choose_directory(
+                title={
+                    "workspace": "选择 Smart Photo Triage 工作区",
+                    "source": "选择照片源目录",
+                    "output": "选择整理后的输出目录",
+                }[field],
+                initial_directory=workspace.root,
+            )
+            if selected is not None and field == "workspace":
+                self.server.workspace = initialize_workspace(Path(selected))
+            return {
+                "field": field,
+                "selected": selected,
+                "workspace": str(self.server.workspace.root),
+                "ai": _ai_summary(self.server.workspace),
+            }
         if action == "scan":
             source = Path(_text(payload, "source"))
             output = Path(_text(payload, "output"))
@@ -169,17 +345,14 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
         if action == "prepare":
             pre = preprocess_workspace(workspace, config=PreviewConfig())
             grouped = group_workspace(workspace)
-            provider_name = _choice(payload, "provider", {"fake", "gemini"}, default="fake")
-            if provider_name == "gemini":
-                if not load_config(workspace.config_path).allow_cloud:
-                    raise ValueError("enable cloud analysis before using Gemini")
-                provider = GeminiVisionProvider(
-                    model=_required_text(payload, "model", maximum=256),
-                    api_key=_secret(payload, "api_key"),
-                )
-            else:
-                provider = FakeVisionProvider()
-            analysis = analyze_workspace(workspace, provider=provider, options=AnalysisOptions())
+            config, router = _router_from_workspace_config(workspace)
+            analysis = analyze_workspace_routed(
+                workspace,
+                router=router,
+                options=AnalysisOptions(),
+                allow_cloud=config.allow_cloud,
+                allow_lan=config.allow_lan,
+            )
             return {
                 "preprocess": _result(pre),
                 "group": _result(grouped),
@@ -194,6 +367,46 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 raise ValueError("type ALLOW_CLOUD to enable cloud analysis")
             save_config(workspace.config_path, AppConfig(allow_cloud=enabled))
             return {"allow_cloud": enabled, "api_key_stored": False}
+        if action == "save-provider":
+            config = normalized_ai_config(load_config(workspace.config_path))
+            provider = _provider_from_payload(payload)
+            providers = tuple(
+                provider if item.provider_id == provider.provider_id else item
+                for item in config.providers
+            )
+            if not any(item.provider_id == provider.provider_id for item in config.providers):
+                providers = (*providers, provider)
+            save_ai_config(workspace.config_path, replace(config, providers=providers))
+            return {"saved_provider_id": provider.provider_id, "ai": _ai_summary(workspace)}
+        if action == "save-routes":
+            config = normalized_ai_config(load_config(workspace.config_path))
+            routes = (
+                (TaskType.ITEM_ANALYSIS, _route_from_payload(payload, "item")),
+                (TaskType.BURST_REVIEW, _route_from_payload(payload, "burst")),
+            )
+            save_ai_config(workspace.config_path, replace(config, routes=routes))
+            return {"ai": _ai_summary(workspace)}
+        if action == "configure-privacy":
+            config = normalized_ai_config(load_config(workspace.config_path))
+            allow_cloud = _bool(payload, "allow_cloud")
+            allow_lan = _bool(payload, "allow_lan")
+            if (
+                allow_cloud
+                and not config.allow_cloud
+                and _required_text(payload, "cloud_confirmation", maximum=64) != _CLOUD_CONFIRMATION
+            ):
+                raise ValueError("type ALLOW_CLOUD to enable remote providers")
+            if (
+                allow_lan
+                and not config.allow_lan
+                and _required_text(payload, "lan_confirmation", maximum=64) != _LAN_CONFIRMATION
+            ):
+                raise ValueError("type ALLOW_LAN to enable LAN providers")
+            save_ai_config(
+                workspace.config_path,
+                replace(config, allow_cloud=allow_cloud, allow_lan=allow_lan),
+            )
+            return {"ai": _ai_summary(workspace), "api_key_stored": False}
         if action == "review":
             review = create_review_server(workspace, port=0)
             thread = threading.Thread(target=review.serve_forever, daemon=True)

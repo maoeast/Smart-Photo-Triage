@@ -54,12 +54,13 @@ it never exposes a LAN service:
 spt gui --workspace "D:\SPT-Workspace"
 ```
 
-Enter a source directory and a separate output directory, then follow the numbered controls:
-scan, choose the offline Fake provider or explicitly configured Gemini, prepare local previews/groups,
-open the human-review page, build a COPY plan, approve, preflight, and dry-run. The GUI starts with
-COPY only. A real apply requires typing
-`EXECUTE`; rollback requires the transaction ID and typing `ROLLBACK`. These confirmations do not
-bypass the immutable plan, approval, preflight, journal, hash verification, or rollback checks.
+Use the native directory pickers to select a workspace, source directory, and separate output
+directory. Configure the v1.2.1 Provider Registry and ITEM_ANALYSIS / BURST_REVIEW routes directly
+in the GUI, then scan, prepare local previews/groups, open the human-review page, build a COPY plan,
+approve, preflight, and dry-run. The GUI starts with
+COPY only. A real apply and rollback each require a clear browser confirmation after clicking the
+button. These confirmations do not bypass the immutable plan, approval, preflight, journal, hash
+verification, or rollback checks.
 
 For the complete Chinese installation, start/stop, uninstall, button-by-button, review, recovery,
 and rollback guide, see [the local GUI user manual](docs/USER_MANUAL_zh-CN.md).

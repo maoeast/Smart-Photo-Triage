@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
@@ -456,3 +457,135 @@ def save_config(path: Path, config: AppConfig) -> None:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
         raise ConfigError(f"Unable to save configuration: {error}") from error
+
+
+def _toml_value(value: str | bool | int | float) -> str:
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _toml_string_list(values: tuple[str, ...] | frozenset[str]) -> str:
+    return "[" + ", ".join(_toml_value(value) for value in values) + "]"
+
+
+def save_ai_config(path: Path, config: AppConfig) -> None:
+    """Atomically persist the complete v1.2.1 AI contract without secrets.
+
+    This intentionally serializes only the parsed, supported configuration surface. API keys are
+    represented exclusively by their environment-variable names, never values.
+    """
+    if not isinstance(config, AppConfig):
+        raise TypeError("config must be an AppConfig")
+    config = normalized_ai_config(config)
+    try:
+        ModelRouter(
+            ProviderRegistry(config.providers),
+            config.route_map(),
+            max_provider_attempts_per_task=config.max_provider_attempts_per_task,
+        )
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
+
+    lines = [
+        "[ai]\n",
+        f"allow_cloud = {_toml_value(config.allow_cloud)}\n",
+        f"allow_lan = {_toml_value(config.allow_lan)}\n",
+    ]
+    for provider in config.providers:
+        lines.extend(
+            [
+                "\n",
+                f"[ai.providers.{provider.provider_id}]\n",
+                f"driver = {_toml_value(provider.driver)}\n",
+                f"model = {_toml_value(provider.model)}\n",
+                f"base_url = {_toml_value(provider.base_url)}\n",
+                f"network_scope = {_toml_value(provider.network_scope.value)}\n",
+            ]
+        )
+        if provider.display_name is not None:
+            lines.append(f"display_name = {_toml_value(provider.display_name)}\n")
+        if provider.api_key_env is not None:
+            lines.append(f"api_key_env = {_toml_value(provider.api_key_env)}\n")
+        if not provider.enabled:
+            lines.append("enabled = false\n")
+        if provider.estimated_cost_per_request is not None:
+            lines.append(
+                f"estimated_cost_per_request = {_toml_value(provider.estimated_cost_per_request)}\n"
+            )
+        default_capabilities = builtin_capabilities(provider.driver)
+        if provider.capabilities != default_capabilities:
+            capabilities = provider.capabilities
+            lines.extend(
+                [
+                    f"\n[ai.providers.{provider.provider_id}.capabilities]\n",
+                    f"supports_image = {_toml_value(capabilities.supports_image)}\n",
+                    f"supports_multi_image = {_toml_value(capabilities.supports_multi_image)}\n",
+                    "supports_structured_json = "
+                    f"{_toml_value(capabilities.supports_structured_json)}\n",
+                    f"supports_json_schema = {_toml_value(capabilities.supports_json_schema)}\n",
+                    "max_images_per_request = "
+                    f"{_toml_value(capabilities.max_images_per_request or 0)}\n",
+                    f"max_request_bytes = {_toml_value(capabilities.max_request_bytes or 0)}\n",
+                    "supported_image_mime_types = "
+                    f"{_toml_string_list(tuple(sorted(capabilities.supported_image_mime_types)))}\n",
+                    "supports_system_prompt = "
+                    f"{_toml_value(capabilities.supports_system_prompt)}\n",
+                    f"supports_streaming = {_toml_value(capabilities.supports_streaming)}\n",
+                    "capability_profile_version = "
+                    f"{_toml_value(capabilities.capability_profile_version)}\n",
+                ]
+            )
+    for task_type, route in config.routes:
+        lines.extend(
+            [
+                "\n",
+                f"[ai.routes.{task_type.value}]\n",
+                f"primary = {_toml_value(route.primary)}\n",
+                f"fallbacks = {_toml_string_list(route.fallbacks)}\n",
+            ]
+        )
+        if route.escalate_to is not None and route.confidence_below is not None:
+            lines.extend(
+                [
+                    f"\n[ai.routes.{task_type.value}.escalation]\n",
+                    f"confidence_below = {_toml_value(route.confidence_below)}\n",
+                    f"to = {_toml_value(route.escalate_to)}\n",
+                    f"max_escalations = {_toml_value(route.max_escalations)}\n",
+                ]
+            )
+    budget = config.budget
+    if budget is not None and (
+        budget.max_requests is not None
+        or budget.max_remote_preview_bytes is not None
+        or budget.max_estimated_cost is not None
+        or config.max_provider_attempts_per_task != 3
+    ):
+        lines.append("\n[ai.limits]\n")
+        lines.append(
+            "max_provider_attempts_per_task = "
+            f"{_toml_value(config.max_provider_attempts_per_task)}\n"
+        )
+        if budget.max_requests is not None:
+            lines.append(f"max_requests_per_run = {_toml_value(budget.max_requests)}\n")
+        if budget.max_remote_preview_bytes is not None:
+            megabyte = 1024 * 1024
+            if budget.max_remote_preview_bytes % megabyte:
+                raise ConfigError("max_remote_preview_bytes must be a whole number of MiB")
+            lines.append(
+                "max_remote_preview_mb_per_run = "
+                f"{_toml_value(budget.max_remote_preview_bytes // megabyte)}\n"
+            )
+        if budget.max_estimated_cost is not None:
+            lines.append(f"max_estimated_cost_per_run = {_toml_value(budget.max_estimated_cost)}\n")
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.writelines(lines)
+        os.replace(temporary, path)
+    except OSError as error:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        raise ConfigError(f"Unable to save AI configuration: {error}") from error
