@@ -1,5 +1,7 @@
 # Smart-Photo-Triage
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Smart-Photo-Triage is a local-first CLI for safely indexing and organizing mixed photo and video
 libraries. Phase H local evidence covers the synthetic release-candidate lifecycle. The product
 provides read-only recursive scanning, incremental media-instance indexing,
@@ -45,7 +47,21 @@ must match the identity stored inside SQLite on every initialization. Because Ph
 released, an existing markerless database is conservatively rejected instead of being attributed to
 SPT without proof.
 
-## Local one-click GUI
+## Windows desktop app and CLI
+
+For ordinary Windows users, install the `Smart-Photo-Triage-Setup-1.2.1.exe` package. It installs
+**Smart Photo Triage** under `%LOCALAPPDATA%\\Programs\\Smart Photo Triage`, creates a Start menu
+entry and can optionally add a desktop shortcut. Start the desktop app by double-clicking it. Its
+window owns an internal, random loopback port and stops that local server when the window closes.
+It requires the Microsoft Edge WebView2 Runtime. If it is missing, the app shows a Chinese message
+with the official installation link. Uninstall from Windows **Installed apps**. The installer is not
+code-signed, so Windows SmartScreen may warn about an unknown publisher.
+
+The desktop app exposes Windows native folder selection for the workspace, source, and output
+directories. In a browser session, enter these paths manually instead.
+
+`spt gui` remains the browser mode for automation and advanced users. It binds only to
+`127.0.0.1` and opens a browser; it never exposes a LAN service:
 
 Start the local control panel after installation. It binds only to `127.0.0.1` and opens a browser;
 it never exposes a LAN service:
@@ -54,8 +70,10 @@ it never exposes a LAN service:
 spt gui --workspace "D:\SPT-Workspace"
 ```
 
-Use the native directory pickers to select a workspace, source directory, and separate output
-directory. Configure the v1.2.1 Provider Registry and ITEM_ANALYSIS / BURST_REVIEW routes directly
+The GUI uses the stable local address `http://127.0.0.1:8765/` by default. If it is already in
+use, choose another local port with `--port 8766`; `--port 0` requests any available local port.
+
+Enter a workspace, source directory, and separate output directory. Configure the v1.2.1 Provider Registry and ITEM_ANALYSIS / BURST_REVIEW routes directly
 in the GUI, then scan, prepare local previews/groups, open the human-review page, build a COPY plan,
 approve, preflight, and dry-run. The GUI starts with
 COPY only. A real apply and rollback each require a clear browser confirmation after clicking the
@@ -238,7 +256,8 @@ joined by `item_id`, never response order. Unknown categories, missing IDs, extr
 confidence, and malformed output are rejected. A low-confidence `REJECT_CANDIDATE` is reduced to
 `REVIEW`. AI records contain no copy, move, rename, overwrite, or delete action.
 
-Cloud access remains disabled in a new workspace. Gemini requires all three explicit choices:
+Cloud access remains disabled in a new workspace. For the direct `spt analyze` CLI, Gemini requires
+all three explicit choices:
 
 1. change the workspace `config.toml` to `allow_cloud = true`;
 2. set `SPT_GEMINI_API_KEY` in the invoking process environment;
@@ -247,6 +266,10 @@ Cloud access remains disabled in a new workspace. Gemini requires all three expl
 ```powershell
 spt analyze --workspace ".\.spt" --provider gemini --model "YOUR_CHOSEN_MODEL"
 ```
+
+The local GUI is simpler for ordinary users: enter the API key in **Model & Privacy** and save the
+provider. On Windows it is encrypted for the current user and automatically reused by later GUI
+starts; it is never written in plaintext to `config.toml`, SQLite, logs, or route audit records.
 
 The standard-library Gemini adapter retries only bounded transient 429, 5xx, and timeout/network
 failures. An exhausted transient batch is recorded once without resetting its retry budget through
@@ -281,7 +304,7 @@ spt review --workspace ".\.spt"
 ```
 
 The server binds only to the numeric IPv4 loopback address `127.0.0.1`. Port `0` selects an
-available local port. Use `--port 8765` for a stable local port or `--no-open` when the caller will
+available local port. Use `--port 8766` for a stable review port or `--no-open` when the caller will
 open the printed URL itself. It does not use a CDN, fetch remote assets, or expose a LAN listener.
 
 The UI pages at most 100 items into the API and DOM at once. It supports year/month, effective

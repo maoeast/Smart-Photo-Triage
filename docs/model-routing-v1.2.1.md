@@ -11,7 +11,7 @@ Provider Router 只接收已经由既有 Preview 边界构建的 `VisionRequest`
 allow_cloud = false
 ```
 
-以下是 v1.2.1 配置示例。API Key 只能写环境变量名，禁止写入 TOML、SQLite、日志或证据文件。
+以下是 v1.2.1 配置示例。`config.toml` 中的 `api_key_env` 只能写环境变量名，禁止写入实际 API Key、SQLite、日志或证据文件。Windows GUI 用户可直接在“API 密钥”密码框保存 Key。该 Key 会用当前 Windows 用户的 DPAPI 加密保存在工作区旁的 `.spt-gui-secrets.json`，不会写入 TOML 或审计记录，换电脑或换 Windows 用户后需重新输入。
 
 ```toml
 [ai]
@@ -55,7 +55,7 @@ max_requests_per_run = 100
 max_remote_preview_mb_per_run = 200
 ```
 
-支持的 driver 为 `fake`、`gemini`、`openai`、`anthropic` 和 `openai_compatible`。Qwen、豆包、GLM 和其他兼容端点复用同一个 `openai_compatible` 驱动，不复制供应商业务逻辑。
+支持的 driver 为 `fake`、`gemini`、`openai`、`anthropic` 和 `openai_compatible`。Qwen、豆包、GLM、DeepSeek 和其他兼容端点复用同一个 `openai_compatible` 驱动，不复制供应商业务逻辑。
 
 “OpenAI-compatible”不保证视觉输入、多图或 JSON Schema 能力。必须显式声明或使用保守内建 capability profile。Router 会在网络请求前检查图片数、MIME、字节上限和结构化输出能力。
 

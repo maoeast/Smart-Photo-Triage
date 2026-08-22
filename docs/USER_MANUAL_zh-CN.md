@@ -1,8 +1,26 @@
 # Smart-Photo-Triage 本地 GUI 操作手册
 
-适用版本：`1.2.1`。本手册对应本地浏览器 GUI，不涉及云端服务或 Windows 系统服务。
+适用版本：`1.2.1`。本手册同时说明面向普通用户的 Windows 桌面版和高级用户的本地浏览器 GUI。
 
-## 先澄清：这里没有“后台服务”
+## 先选择运行方式
+
+| 方式 | 适用对象 | 启动与端口 | 目录选择 |
+| --- | --- | --- | --- |
+| **Smart Photo Triage 桌面版** | 普通 Windows 用户 | 双击开始菜单或桌面图标。内部使用随机 `127.0.0.1` 端口，关闭窗口即停止。 | Windows 原生文件夹对话框 |
+| **`spt gui` 浏览器模式** | 高级用户、自动化、Agent | 默认 `127.0.0.1:8765`，可用 `--port 0` 自动选择。以 `Ctrl+C` 关闭。 | 手动输入完整路径 |
+
+两种方式都只监听 IPv4 loopback，绝不开放 LAN 或远端访问。桌面版需要 Microsoft Edge WebView2 Runtime。缺失时会显示安装提示和官方下载链接。发布包目前未签名，SmartScreen 可能提示“未知发布者”。
+
+## Windows 桌面版安装、启动与卸载
+
+1. 运行发布的 `Smart-Photo-Triage-Setup-1.2.1.exe`，按安装向导完成安装。默认位置为 `%LOCALAPPDATA%\Programs\Smart Photo Triage`，可选择创建桌面快捷方式。
+2. 从开始菜单或桌面打开 **Smart Photo Triage**。无需打开 PowerShell，也不需要处理端口。
+3. 首次使用时依次选择独立的工作区、照片源和输出目录。点击“选择…”会打开 Windows 原生文件夹选择器。点击取消不会修改当前输入。
+4. 直接关闭应用窗口即可结束本次本地服务。需要卸载时，进入 Windows“设置 > 应用 > 已安装的应用”，卸载 **Smart Photo Triage**。卸载不删除工作区、原始照片或输出副本。
+
+若提示 WebView2 缺失，请安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 后重新打开应用。
+
+## 浏览器模式说明
 
 Smart-Photo-Triage 是在本机前台运行的 Python 程序。执行 `spt gui` 后，它只监听
 `127.0.0.1`，自动打开浏览器。本机以外的设备无法访问，也不会开机自启。
@@ -10,6 +28,7 @@ Smart-Photo-Triage 是在本机前台运行的 Python 程序。执行 `spt gui` 
 - **安装**：创建项目专用 Python 虚拟环境并安装程序。
 - **启动服务**：在终端启动 GUI 进程。
 - **停止服务**：在该终端按 `Ctrl+C`。
+- **目录选择**：浏览器模式请手动输入路径。原生目录选择器只在桌面版提供。
 - **卸载**：删除项目内的虚拟环境。运行工作区和照片目录不会因卸载程序而自动删除。
 
 ## 1. 安装
@@ -50,10 +69,10 @@ Set-Location F:\Projects\Smart-Photo-Triage
 `F:\Projects\Smart-Photo-Triage` 是程序源码目录，`D:\SPT-Workspace` 是运行工作区，二者应分开。
 工作区会保存扫描数据库、预览、人工审核决定、计划和事务日志。它不是照片输出目录。
 
-正常情况下浏览器会自动打开。终端会显示类似下面的地址：
+正常情况下浏览器会自动打开。默认地址固定为：
 
 ```text
-Smart Photo Triage GUI: http://127.0.0.1:xxxxx/
+Smart Photo Triage GUI: http://127.0.0.1:8765/
 ```
 
 如果浏览器没有自动打开，将该地址复制到本机浏览器即可。
@@ -61,7 +80,7 @@ Smart Photo Triage GUI: http://127.0.0.1:xxxxx/
 ### 可选启动参数
 
 ```powershell
-# 固定端口，方便自己收藏地址
+# 改用其他端口。默认端口 8765 被占用时使用。
 .\.venv\Scripts\spt.exe gui --workspace "D:\SPT-Workspace" --port 8765
 
 # 不自动打开浏览器，只在终端打印地址
@@ -153,7 +172,7 @@ GUI 的“模型设置”使用 v1.2.1 统一兼容层，而不是 Gemini 专用
 | **Google Gemini** | 是 | 使用 Gemini 原生图像接口。 |
 | **OpenAI** | 是 | 使用 OpenAI 图像分析兼容接口。 |
 | **Anthropic** | 是 | 使用 Anthropic Messages/Vision 接口。 |
-| **DeepSeek** | 是 | 通过统一 OpenAI-compatible 接口接入。选择后自动填入官方服务地址和 `DEEPSEEK_API_KEY` 变量名。 |
+| **DeepSeek** | 是 | 通过统一 OpenAI-compatible 接口接入。选择后自动填入官方服务地址；在 API 密钥框粘贴自己的 Key。 |
 | **OpenAI-compatible** | 取决于 URL | 统一接入 Qwen、豆包、GLM 和本机 VLM 等兼容服务。 |
 
 Codex、Claude Code 是开发 Agent，不是本工具中可直接填写 Key 的视觉 Provider。Anthropic API 由独立
@@ -164,22 +183,16 @@ Provider 驱动处理，不能把 Gemini、OpenAI 或 Anthropic 的 Key 混用�
 1. 在 **添加或修改分析服务** 填写“配置编号”“模型服务”和“模型名称”。配置编号仅供系统区分多个服务使用。
 2. 选择 Gemini、OpenAI、Anthropic 或 DeepSeek 后，界面会自动填入对应的官方服务地址；兼容服务必须填写地址。系统会自动依据 URL
    判定 loopback、LAN 或 remote，并拒绝不安全的远程 HTTP 地址。
-3. 在 **访问密钥变量名（高级设置）** 填写例如 `OPENAI_API_KEY` 或 `SPT_QWEN_API_KEY`。不要填写实际 Key。
+3. 在 **API 密钥** 粘贴服务商提供的实际 Key，然后点击 **保存分析服务**。密钥会与当前 Windows 用户和这台电脑绑定保存，下次启动会自动可用，页面不会显示 Key 内容。
 4. 点击 **保存分析服务**。右侧“已添加的分析服务”会显示服务类型、模型、网络范围和访问密钥是否已准备。
 5. 在 **单张照片分析** 和 **连拍照片复核** 分别选择优先模型、模型临时不可用时使用的备用模型，以及可选的一次
    “把握不足时改用更强模型”，然后点击 **保存模型使用方式**。
 6. 如配置了互联网模型服务，展开“允许连接模型服务（默认关闭）”，勾选互联网权限，输入 `ALLOW_CLOUD` 后保存。局域网模型服务
    同理，需要输入 `ALLOW_LAN`。未授权时 Router 会阻止请求，不会静默上传。
 
-API Key 由启动 GUI 的 PowerShell 环境提供。例如：
+API Key 不会写入 `config.toml`、SQLite 或日志。GUI 使用 Windows 的当前用户加密存储保存 Key；若把工作区复制到另一台电脑或换用另一 Windows 账号，需要重新输入一次。需要撤销时，在相同配置编号下点击 **清除已保存密钥**。
 
-```powershell
-$env:OPENAI_API_KEY = "在这里设置你自己的 Key"
-.\.venv\Scripts\spt.exe gui --workspace "D:\SPT-Workspace"
-```
-
-GUI 只会保存环境变量名、模型、Base URL、能力默认值和路由，不会保存 Key 值。关闭 GUI 后如要再次使用，
-请在新的 PowerShell 会话重新设置环境变量，或通过受控的用户级环境变量管理方式配置它。
+“高级选项：从环境变量读取密钥”只提供给已有自动化配置的用户，普通使用不需要打开或设置 PowerShell。
 
 ### 上传边界与成本
 
@@ -253,7 +266,7 @@ Remove-Item -Recurse -Force "F:\Projects\Smart-Photo-Triage\.venv"
 ## 9. 重要限制
 
 - GUI 是本地控制面板，不是云服务，也没有账号、共享链接或远程访问能力。
-- 默认“准备与分析”使用离线 `FakeVisionProvider`。Gemini、OpenAI、Anthropic 或兼容 Provider 只有在路由引用、Key 环境变量可用且网络权限明确授权后才会联网。
+- 默认“准备与分析”使用离线 `FakeVisionProvider`。Gemini、OpenAI、Anthropic 或兼容 Provider 只有在路由引用、已保存 API Key 或环境变量可用且网络权限明确授权后才会联网。
 - GUI 使用 Provider Registry 和两条独立路由，不支持把 Codex、Claude Code 这类开发 Agent 的凭据直接填入视觉模型配置。
 - 当前 GUI 只生成 `COPY` 计划，不支持移动或删除照片源。
 - 真正的文件写入仅发生在通过批准和预检后的“真正复制”，以及你明确确认的“安全回滚”。

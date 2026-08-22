@@ -173,6 +173,7 @@ class _MutationLease:
 
 FaultInjector = Callable[[str, int], None]
 ProcessLiveness = Callable[[int, str], str]
+CopyProgressCallback = Callable[[str, PlanEntry, int], None]
 _IDENTITY_DELETE_TEST_HOOK: Callable[[Path], None] | None = None
 
 
@@ -1077,6 +1078,7 @@ def _copy_entry_to_target(
     row: sqlite3.Row,
     transaction_id: str,
     fault_injector: FaultInjector | None,
+    progress_callback: CopyProgressCallback | None = None,
 ) -> tuple[_FileIdentity, dict[str, object]]:
     source = Path(entry.source_path)
     target = Path(entry.target_path)
@@ -1120,6 +1122,8 @@ def _copy_entry_to_target(
             while chunk := input_stream.read(_HASH_CHUNK_SIZE):
                 digest.update(chunk)
                 output_stream.write(chunk)
+                if progress_callback is not None:
+                    progress_callback("bytes", entry, len(chunk))
             output_stream.flush()
             os.fsync(output_stream.fileno())
             after = os.fstat(input_stream.fileno())
@@ -1273,6 +1277,7 @@ def _finish_entry(
     row: sqlite3.Row,
     transaction_id: str,
     fault_injector: FaultInjector | None,
+    progress_callback: CopyProgressCallback | None = None,
 ) -> None:
     state = str(row["state"])
     metadata = _metadata(row["error"])
@@ -1308,7 +1313,7 @@ def _finish_entry(
             state = "PREPARED"
     if state == "PREPARED":
         final, metadata = _copy_entry_to_target(
-            workspace, plan, entry, row, transaction_id, fault_injector
+            workspace, plan, entry, row, transaction_id, fault_injector, progress_callback
         )
         state = (
             "ALREADY_PRESENT"
@@ -1417,6 +1422,7 @@ def _run_transaction(
     plan: OrganizationPlan,
     transaction_id: str,
     fault_injector: FaultInjector | None,
+    progress_callback: CopyProgressCallback | None = None,
 ) -> ExecutionResult:
     transaction, rows = _load_transaction(workspace, transaction_id)
     entries = _entry_by_media(plan)
@@ -1432,9 +1438,17 @@ def _run_transaction(
             _mark_failed(workspace, row, RecoverySafetyError("JOURNAL_PLAN_MISMATCH"))
             continue
         try:
-            _finish_entry(workspace, plan, entry, row, transaction_id, fault_injector)
+            if progress_callback is not None:
+                progress_callback("started", entry, 0)
+            _finish_entry(
+                workspace, plan, entry, row, transaction_id, fault_injector, progress_callback
+            )
+            if progress_callback is not None:
+                progress_callback("completed", entry, entry.expected_size)
         except Exception as error:
             _mark_failed(workspace, row, error)
+            if progress_callback is not None:
+                progress_callback("failed", entry, 0)
     _transaction, final_rows = _load_transaction(workspace, transaction_id)
     states = {str(row["state"]) for row in final_rows}
     final_state = "DONE" if states <= {"DONE", "ALREADY_PRESENT"} else "PARTIAL"
@@ -1449,6 +1463,7 @@ def apply_plan(
     dry_run: bool = True,
     fault_injector: FaultInjector | None = None,
     process_liveness: ProcessLiveness = _default_process_liveness,
+    progress_callback: CopyProgressCallback | None = None,
 ) -> ExecutionResult:
     """Apply the exact approved preflight contract. Dry-run is the default."""
     if not report.ok or report.approval_state != "APPROVED":
@@ -1495,7 +1510,7 @@ def apply_plan(
         transaction_id = _create_transaction(workspace, plan, report)
         for entry in plan.entries:
             _inject(fault_injector, "AFTER_PREPARED", entry.media_id)
-        return _run_transaction(workspace, plan, transaction_id, fault_injector)
+        return _run_transaction(workspace, plan, transaction_id, fault_injector, progress_callback)
 
 
 def resume_transaction(
@@ -1504,6 +1519,7 @@ def resume_transaction(
     *,
     fault_injector: FaultInjector | None = None,
     process_liveness: ProcessLiveness = _default_process_liveness,
+    progress_callback: CopyProgressCallback | None = None,
 ) -> ExecutionResult:
     """Resume a durable incomplete transaction without regenerating names or authority."""
     with workspace_mutation_lock(workspace, process_liveness=process_liveness):
@@ -1514,7 +1530,7 @@ def resume_transaction(
             return _result(workspace, transaction_id, str(transaction["plan_id"]))
         plan = inspect_plan(workspace, str(transaction["plan_id"]))
         _require_transaction_approval(workspace, transaction_id, plan)
-        return _run_transaction(workspace, plan, transaction_id, fault_injector)
+        return _run_transaction(workspace, plan, transaction_id, fault_injector, progress_callback)
 
 
 def _copy_restore(

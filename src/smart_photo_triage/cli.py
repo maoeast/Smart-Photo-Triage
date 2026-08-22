@@ -314,7 +314,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace", type=Path, default=Path(".spt"), help="Workspace path (default: .spt)"
     )
     gui_parser.add_argument(
-        "--port", type=_port_number, default=0, help="Local port; 0 selects an available port"
+        "--port",
+        type=_port_number,
+        default=8765,
+        help="Local port (default: 8765; use 0 for any available port)",
     )
     gui_parser.add_argument("--no-open", action="store_true", help="Do not open a browser")
     ai_parser = commands.add_parser(

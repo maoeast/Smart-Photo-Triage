@@ -19,9 +19,11 @@ dev = [
   "ruff>=0.8,<1",
 ]
 heic = ["pillow-heif>=0.20,<2"]
+desktop = ["pywebview>=5.4,<7"]
 
 [project.scripts]
 spt = "smart_photo_triage.cli:main"
+smart-photo-triage-desktop = "smart_photo_triage.desktop:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -8,6 +8,7 @@ import secrets
 import threading
 import webbrowser
 from dataclasses import asdict, is_dataclass, replace
+from errno import EADDRINUSE
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,9 +26,17 @@ from smart_photo_triage.config import (
     save_ai_config,
     save_config,
 )
+from smart_photo_triage.copy_jobs import CopyJob
 from smart_photo_triage.executor import apply_plan, doctor_workspace, rollback_transaction
 from smart_photo_triage.grouping import group_workspace
 from smart_photo_triage.gui_assets import CSS, HTML, JS, SETTINGS_HTML
+from smart_photo_triage.gui_progress_assets import COPY_PROGRESS_JS
+from smart_photo_triage.gui_secrets import (
+    GuiSecretError,
+    load_provider_secret,
+    remove_provider_secret,
+    save_provider_secret,
+)
 from smart_photo_triage.model_routing import (
     ModelRouter,
     ProviderConfig,
@@ -66,6 +75,13 @@ def _result(value: object) -> object:
     return value
 
 
+def _provider_has_saved_secret(workspace: Workspace, provider_id: str) -> bool:
+    try:
+        return load_provider_secret(workspace, provider_id) is not None
+    except GuiSecretError:
+        return False
+
+
 def _ai_summary(workspace: Workspace) -> dict[str, object]:
     config = normalized_ai_config(load_config(workspace.config_path))
     routes = config.route_map()
@@ -76,6 +92,10 @@ def _ai_summary(workspace: Workspace) -> dict[str, object]:
         "providers": [
             {
                 **provider.redacted_summary(),
+                "api_key_configured": (
+                    provider.resolve_api_key() is not None
+                    or _provider_has_saved_secret(workspace, provider.provider_id)
+                ),
                 "display_name": provider.display_name,
                 "base_url": provider.base_url,
                 "api_key_env": provider.api_key_env,
@@ -101,8 +121,10 @@ def _router_from_workspace_config(workspace: Workspace) -> tuple[AppConfig, Mode
     for provider in registry.providers:
         if provider.driver == "fake":
             drivers[provider.provider_id] = FakeVisionProvider(model=provider.model)
-        elif provider.resolve_api_key() is not None:
-            drivers[provider.provider_id] = build_driver(provider)
+            continue
+        saved_api_key = load_provider_secret(workspace, provider.provider_id)
+        if saved_api_key is not None or provider.resolve_api_key() is not None:
+            drivers[provider.provider_id] = build_driver(provider, api_key=saved_api_key)
     return config, ModelRouter(
         registry,
         config.route_map(),
@@ -110,31 +132,6 @@ def _router_from_workspace_config(workspace: Workspace) -> tuple[AppConfig, Mode
         budget=config.budget,
         max_provider_attempts_per_task=config.max_provider_attempts_per_task,
     )
-
-
-def _choose_directory(*, title: str, initial_directory: Path) -> str | None:
-    """Open the OS folder chooser only on the local interactive desktop."""
-    try:
-        import tkinter
-        from tkinter import filedialog
-
-        root = tkinter.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        try:
-            selected = filedialog.askdirectory(
-                parent=root,
-                title=title,
-                initialdir=str(initial_directory) if initial_directory.is_dir() else None,
-                mustexist=True,
-            )
-        finally:
-            root.destroy()
-    except Exception as error:  # noqa: BLE001
-        raise ValueError(
-            "native directory picker is unavailable in this desktop session"
-        ) from error
-    return str(Path(selected)) if selected else None
 
 
 def _optional_text(payload: dict[str, object], key: str, *, maximum: int = 4096) -> str | None:
@@ -202,6 +199,7 @@ class GuiHTTPServer(ThreadingHTTPServer):
         self.csrf_token = secrets.token_urlsafe(32)
         self.operation_lock = threading.Lock()
         self.review_servers: list[tuple[object, threading.Thread]] = []
+        self.copy_job: CopyJob | None = None
         super().__init__(address, GuiRequestHandler)
 
     def close_review_servers(self) -> None:
@@ -260,6 +258,8 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, SETTINGS_HTML.encode(), "text/html; charset=utf-8")
         elif target.path == "/app.js":
             self._send(HTTPStatus.OK, JS.encode(), "text/javascript; charset=utf-8")
+        elif target.path == "/copy-progress.js":
+            self._send(HTTPStatus.OK, COPY_PROGRESS_JS.encode(), "text/javascript; charset=utf-8")
         elif target.path == "/app.css":
             self._send(HTTPStatus.OK, CSS.encode(), "text/css; charset=utf-8")
         elif target.path == "/favicon.ico":
@@ -283,6 +283,9 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, _result(doctor_workspace(self.server.workspace)))
             except (OSError, ValueError):
                 self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "LOCAL_STATE_ERROR"})
+        elif target.path == "/api/copy-job":
+            job = self.server.copy_job
+            self._json(HTTPStatus.OK, {"job": job.snapshot() if job is not None else None})
         else:
             self._json(HTTPStatus.NOT_FOUND, {"error": "NOT_FOUND"})
 
@@ -319,24 +322,6 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
 
     def _run(self, action: str, payload: dict[str, object]) -> object:
         workspace = self.server.workspace
-        if action == "choose-directory":
-            field = _choice(payload, "field", {"workspace", "source", "output"}, default="source")
-            selected = _choose_directory(
-                title={
-                    "workspace": "选择 Smart Photo Triage 工作区",
-                    "source": "选择照片源目录",
-                    "output": "选择整理后的输出目录",
-                }[field],
-                initial_directory=workspace.root,
-            )
-            if selected is not None and field == "workspace":
-                self.server.workspace = initialize_workspace(Path(selected))
-            return {
-                "field": field,
-                "selected": selected,
-                "workspace": str(self.server.workspace.root),
-                "ai": _ai_summary(self.server.workspace),
-            }
         if action == "scan":
             source = Path(_text(payload, "source"))
             output = Path(_text(payload, "output"))
@@ -377,7 +362,20 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             if not any(item.provider_id == provider.provider_id for item in config.providers):
                 providers = (*providers, provider)
             save_ai_config(workspace.config_path, replace(config, providers=providers))
-            return {"saved_provider_id": provider.provider_id, "ai": _ai_summary(workspace)}
+            api_key = _optional_text(payload, "api_key", maximum=4096)
+            if api_key is not None:
+                save_provider_secret(workspace, provider.provider_id, api_key)
+            return {
+                "saved_provider_id": provider.provider_id,
+                "api_key_saved": api_key is not None,
+                "ai": _ai_summary(workspace),
+            }
+        if action == "forget-provider-key":
+            provider_id = _required_text(payload, "provider_id", maximum=64)
+            return {
+                "removed": remove_provider_secret(workspace, provider_id),
+                "ai": _ai_summary(workspace),
+            }
         if action == "save-routes":
             config = normalized_ai_config(load_config(workspace.config_path))
             routes = (
@@ -446,10 +444,13 @@ class GuiRequestHandler(BaseHTTPRequestHandler):
             report = preflight_plan(workspace, plan_id)
             if not report.ok:
                 return {"preflight": _result(report), "applied": None}
-            return {
-                "preflight": _result(report),
-                "applied": _result(apply_plan(workspace, report, dry_run=False)),
-            }
+            active_job = self.server.copy_job
+            if active_job is not None and active_job.snapshot()["state"] in {"QUEUED", "RUNNING"}:
+                raise ValueError("a copy job is already running")
+            job = CopyJob(workspace, report)
+            self.server.copy_job = job
+            job.start()
+            return {"preflight": _result(report), "copy_job": job.snapshot()}
         raise ValueError("unknown GUI action")
 
 
@@ -496,8 +497,15 @@ def create_gui_server(
     return GuiHTTPServer((host, port), initialize_workspace(workspace_root))
 
 
-def serve_gui(workspace_root: Path, *, port: int = 0, open_browser: bool = True) -> None:
-    server = create_gui_server(workspace_root, port=port)
+def serve_gui(workspace_root: Path, *, port: int = 8765, open_browser: bool = True) -> None:
+    try:
+        server = create_gui_server(workspace_root, port=port)
+    except OSError as error:
+        if error.errno in {EADDRINUSE, 10048} or getattr(error, "winerror", None) == 10048:
+            raise ValueError(
+                f"GUI port {port} is already in use. Close the existing GUI or use --port."
+            ) from error
+        raise
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"Smart Photo Triage GUI: {url}")
     try:

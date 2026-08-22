@@ -38,8 +38,8 @@ def no_redirect_opener(request: Request, timeout: float) -> _Response:
     return build_opener(_NoRedirect()).open(request, timeout=timeout)  # type: ignore[return-value]
 
 
-def _api_key(provider: ProviderConfig) -> str:
-    key = provider.resolve_api_key()
+def _api_key(provider: ProviderConfig, session_api_key: str | None = None) -> str:
+    key = session_api_key or provider.resolve_api_key()
     if not key:
         raise ProviderFailure(
             ErrorClass.CONFIG_ERROR, "configured API key environment variable is absent"
@@ -102,10 +102,12 @@ class OpenAICompatibleVisionDriver:
         self,
         provider: ProviderConfig,
         *,
+        api_key: str | None = None,
         opener: Callable[..., object] | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
         self.provider = provider
+        self.api_key = api_key
         self.opener = opener or no_redirect_opener
         self.timeout_seconds = timeout_seconds
 
@@ -137,7 +139,7 @@ class OpenAICompatibleVisionDriver:
                 data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {_api_key(self.provider)}",
+                    "Authorization": f"Bearer {_api_key(self.provider, self.api_key)}",
                 },
                 method="POST",
             ),
@@ -165,10 +167,12 @@ class AnthropicVisionDriver:
         self,
         provider: ProviderConfig,
         *,
+        api_key: str | None = None,
         opener: Callable[..., object] | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
         self.provider = provider
+        self.api_key = api_key
         self.opener = opener or no_redirect_opener
         self.timeout_seconds = timeout_seconds
 
@@ -199,7 +203,7 @@ class AnthropicVisionDriver:
                 ).encode("utf-8"),
                 headers={
                     "Content-Type": "application/json",
-                    "x-api-key": _api_key(self.provider),
+                    "x-api-key": _api_key(self.provider, self.api_key),
                     "anthropic-version": "2023-06-01",
                 },
                 method="POST",
@@ -218,6 +222,7 @@ class AnthropicVisionDriver:
 def build_driver(
     provider: ProviderConfig,
     *,
+    api_key: str | None = None,
     opener: Callable[..., object] | None = None,
     timeout_seconds: float = 30.0,
 ) -> object:
@@ -225,15 +230,17 @@ def build_driver(
     if provider.driver == "gemini":
         return GeminiVisionProvider(
             model=provider.model,
-            api_key=_api_key(provider),
+            api_key=_api_key(provider, api_key),
             opener=opener or no_redirect_opener,
             timeout_seconds=timeout_seconds,
             api_base=provider.base_url,
         )
     if provider.driver in {"openai", "openai_compatible"}:
         return OpenAICompatibleVisionDriver(
-            provider, opener=opener, timeout_seconds=timeout_seconds
+            provider, api_key=api_key, opener=opener, timeout_seconds=timeout_seconds
         )
     if provider.driver == "anthropic":
-        return AnthropicVisionDriver(provider, opener=opener, timeout_seconds=timeout_seconds)
+        return AnthropicVisionDriver(
+            provider, api_key=api_key, opener=opener, timeout_seconds=timeout_seconds
+        )
     raise ProviderFailure(ErrorClass.CONFIG_ERROR, "fake drivers must be supplied by the caller")
